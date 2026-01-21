@@ -7,21 +7,20 @@
     <title>XRISK | Consultoría y Gestión de Riesgos</title>
     <meta name="description" content="Expertos en gestión de riesgos, consultoría estratégica y soluciones corporativas en el Perú.">
     
-    <!-- Fuentes de Google: Inter para un look moderno y corporativo -->
+    <!-- Fuentes de Google: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 
-    <!-- Iconos (Phosphor Icons - cargados vía CDN para iconos ligeros) -->
+    <!-- Iconos (Phosphor Icons) -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
 
     <style>
         /* --- VARIABLES CSS & RESET --- */
         :root {
-            /* Colores basados en la identidad visual corporativa de XRISK */
-            --primary-color: #0F172A; /* Azul marino muy oscuro */
-            --secondary-color: #334155; /* Gris azulado */
-            --accent-color: #0284C7; /* Azul vibrante */
+            --primary-color: #0F172A;
+            --secondary-color: #334155;
+            --accent-color: #0284C7;
             --accent-hover: #0369A1;
             --text-dark: #1E293B;
             --text-light: #64748B;
@@ -227,6 +226,7 @@
             display: flex;
             gap: 16px;
             justify-content: center;
+            flex-wrap: wrap; /* Para que se ajuste en móviles */
         }
 
         /* --- FEATURES / NOSOTROS --- */
@@ -499,8 +499,13 @@
         @media (max-width: 480px) {
             .hero-buttons {
                 flex-direction: column;
+                width: 100%;
             }
             
+            .hero-buttons .btn {
+                width: 100%;
+            }
+
             .footer-grid {
                 grid-template-columns: 1fr;
             }
@@ -542,6 +547,12 @@
                 <div class="hero-buttons">
                     <a href="#servicios" class="btn btn-primary">Nuestros Servicios</a>
                     <a href="#contacto" class="btn btn-outline">Contáctanos</a>
+                    
+                    <!-- NUEVO BOTÓN DE DESCARGA -->
+                    <!-- NOTA: Cambia 'brochure.pdf' por el nombre exacto de tu archivo en el repositorio -->
+                    <a href="Brochure-Web-XRISK.pdf" target="_blank" class="btn btn-outline">
+                        <i class="ph ph-download-simple" style="margin-right: 8px;"></i> Descarga Brochure
+                    </a>
                 </div>
             </div>
         </section>
@@ -775,6 +786,5 @@
     </script>
 </body>
 </html>
-
 
 
