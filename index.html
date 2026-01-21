@@ -153,13 +153,16 @@
         }
 
         .logo {
-            font-size: 1.5rem;
-            font-weight: 800;
-            color: var(--primary-color);
-            letter-spacing: -1px;
             display: flex;
             align-items: center;
-            gap: 8px;
+            /* Eliminamos las fuentes y colores porque ahora es una imagen */
+        }
+
+        /* Estilo específico para la imagen del logo */
+        .logo-img {
+            height: 60px;  /* Ajusta este valor (ej. 50px o 70px) hasta que el logo quede del tamaño que te guste */
+            width: auto;   /* Esto mantiene la proporción de la imagen para que no se deforme */
+            display: block;
         }
         
         .logo span {
@@ -518,8 +521,8 @@
     <header>
         <div class="container nav-container">
             <a href="#" class="logo">
-                <i class="ph-fill ph-shield-check"></i>
-                XRISK<span>.PE</span>
+                <!-- IMPORTANTE: Cambia 'logo.png' por el nombre real de tu archivo -->
+                <img src="logo.png" alt="Logo XRISK" class="logo-img">
             </a>
             
             <button class="mobile-menu-btn" aria-label="Abrir menú">
