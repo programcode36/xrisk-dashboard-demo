@@ -1,30 +1,780 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>XRISK – Dashboard de Riesgos</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XRISK | Consultoría y Gestión de Riesgos</title>
+    <meta name="description" content="Expertos en gestión de riesgos, consultoría estratégica y soluciones corporativas en el Perú.">
+    
+    <!-- Fuentes de Google: Inter para un look moderno y corporativo -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+    <!-- Iconos (Phosphor Icons - cargados vía CDN para iconos ligeros) -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
     <style>
-        body { font-family: Arial, sans-serif; background:#f5f7fa; margin:0; }
-        header { background:#0b2c3d; color:white; padding:20px; text-align:center; }
-        section { max-width:1200px; margin:40px auto; padding:20px; background:white; border-radius:8px; }
-        iframe { width:100%; height:600px; border:none; }
+        /* --- VARIABLES CSS & RESET --- */
+        :root {
+            /* Colores basados en la identidad visual corporativa de XRISK */
+            --primary-color: #0F172A; /* Azul marino muy oscuro */
+            --secondary-color: #334155; /* Gris azulado */
+            --accent-color: #0284C7; /* Azul vibrante */
+            --accent-hover: #0369A1;
+            --text-dark: #1E293B;
+            --text-light: #64748B;
+            --white: #ffffff;
+            --bg-light: #F8FAFC;
+            --border-color: #E2E8F0;
+            
+            --max-width: 1200px;
+            --header-height: 80px;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.1);
+            --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+            --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.1);
+            --radius: 8px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            color: var(--text-dark);
+            background-color: var(--white);
+            line-height: 1.6;
+        }
+
+        a {
+            text-decoration: none;
+            color: inherit;
+            transition: color 0.3s ease;
+        }
+
+        ul {
+            list-style: none;
+        }
+
+        img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        /* --- UTILIDADES --- */
+        .container {
+            max-width: var(--max-width);
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 24px;
+            font-weight: 600;
+            border-radius: var(--radius);
+            transition: all 0.3s ease;
+            cursor: pointer;
+            border: none;
+            font-size: 1rem;
+        }
+
+        .btn-primary {
+            background-color: var(--accent-color);
+            color: var(--white);
+        }
+
+        .btn-primary:hover {
+            background-color: var(--accent-hover);
+            transform: translateY(-2px);
+        }
+
+        .btn-outline {
+            background-color: transparent;
+            border: 2px solid var(--white);
+            color: var(--white);
+        }
+
+        .btn-outline:hover {
+            background-color: var(--white);
+            color: var(--primary-color);
+        }
+
+        .section-padding {
+            padding: 80px 0;
+        }
+
+        .section-title {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .section-title h2 {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 16px;
+        }
+
+        .section-title p {
+            color: var(--text-light);
+            max-width: 600px;
+            margin: 0 auto;
+            font-size: 1.1rem;
+        }
+
+        /* --- HEADER --- */
+        header {
+            height: var(--header-height);
+            background-color: var(--white);
+            box-shadow: var(--shadow-sm);
+            position: fixed;
+            width: 100%;
+            top: 0;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+        }
+
+        .nav-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--primary-color);
+            letter-spacing: -1px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .logo span {
+            color: var(--accent-color);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 32px;
+            align-items: center;
+        }
+
+        .nav-links a {
+            font-weight: 500;
+            color: var(--secondary-color);
+            font-size: 0.95rem;
+        }
+
+        .nav-links a:hover {
+            color: var(--accent-color);
+        }
+
+        .mobile-menu-btn {
+            display: none;
+            font-size: 1.5rem;
+            color: var(--primary-color);
+            cursor: pointer;
+            background: none;
+            border: none;
+        }
+
+        /* --- HERO SECTION --- */
+        .hero {
+            margin-top: var(--header-height);
+            min-height: calc(100vh - var(--header-height));
+            background-image: linear-gradient(rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.7)), url('https://picsum.photos/seed/xrisk_buildings/1920/1080.jpg');
+            background-size: cover;
+            background-position: center;
+            display: flex;
+            align-items: center;
+            color: var(--white);
+            text-align: center;
+        }
+
+        .hero-content {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .hero h1 {
+            font-size: 3.5rem;
+            line-height: 1.2;
+            margin-bottom: 24px;
+            font-weight: 700;
+        }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: #cbd5e1;
+            margin-bottom: 40px;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+        }
+
+        /* --- FEATURES / NOSOTROS --- */
+        .features {
+            background-color: var(--white);
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 40px;
+            align-items: center;
+        }
+
+        .feature-text h2 {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 20px;
+        }
+
+        .feature-text p {
+            color: var(--text-light);
+            margin-bottom: 20px;
+            font-size: 1.1rem;
+        }
+
+        .feature-list {
+            margin-top: 30px;
+        }
+
+        .feature-item {
+            display: flex;
+            align-items: start;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .feature-item i {
+            color: var(--accent-color);
+            font-size: 1.25rem;
+            margin-top: 3px;
+        }
+
+        .feature-img img {
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* --- SERVICIOS --- */
+        .services {
+            background-color: var(--bg-light);
+        }
+
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+        }
+
+        .service-card {
+            background: var(--white);
+            padding: 40px 30px;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
+            transition: all 0.3s ease;
+            border-top: 4px solid transparent;
+        }
+
+        .service-card:hover {
+            transform: translateY(-10px);
+            box-shadow: var(--shadow-lg);
+            border-top: 4px solid var(--accent-color);
+        }
+
+        .service-icon {
+            width: 60px;
+            height: 60px;
+            background-color: #E0F2FE;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 12px;
+            font-size: 32px;
+            margin-bottom: 24px;
+        }
+
+        .service-card h3 {
+            font-size: 1.25rem;
+            color: var(--primary-color);
+            margin-bottom: 12px;
+        }
+
+        .service-card p {
+            color: var(--text-light);
+            font-size: 0.95rem;
+        }
+
+        /* --- STATS --- */
+        .stats {
+            background-color: var(--primary-color);
+            color: var(--white);
+            padding: 60px 0;
+        }
+
+        .stats-grid {
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 30px;
+            text-align: center;
+        }
+
+        .stat-item h3 {
+            font-size: 3rem;
+            font-weight: 800;
+            color: var(--accent-color);
+            margin-bottom: 8px;
+        }
+
+        .stat-item p {
+            font-size: 1.1rem;
+            opacity: 0.8;
+        }
+
+        /* --- CONTACTO --- */
+        .contact {
+            background-color: var(--white);
+        }
+
+        .contact-wrapper {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 60px;
+            align-items: start;
+        }
+
+        .contact-info h3 {
+            font-size: 1.5rem;
+            color: var(--primary-color);
+            margin-bottom: 20px;
+        }
+
+        .contact-details div {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .contact-details i {
+            font-size: 1.5rem;
+            color: var(--accent-color);
+        }
+
+        .contact-form {
+            background: var(--bg-light);
+            padding: 40px;
+            border-radius: var(--radius);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: var(--secondary-color);
+        }
+
+        .form-group input,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            font-family: inherit;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        /* --- FOOTER --- */
+        footer {
+            background-color: var(--primary-color);
+            color: #94a3b8;
+            padding: 60px 0 20px;
+            font-size: 0.9rem;
+        }
+
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: 40px;
+            margin-bottom: 40px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 40px;
+        }
+
+        .footer-brand h4 {
+            color: var(--white);
+            font-size: 1.5rem;
+            margin-bottom: 16px;
+            font-weight: 700;
+        }
+
+        .footer-col h5 {
+            color: var(--white);
+            margin-bottom: 20px;
+            font-size: 1.1rem;
+        }
+
+        .footer-col ul li {
+            margin-bottom: 12px;
+        }
+
+        .footer-col ul li a:hover {
+            color: var(--accent-color);
+        }
+
+        .copyright {
+            text-align: center;
+        }
+
+        /* --- RESPONSIVE MEDIA QUERIES --- */
+        @media (max-width: 992px) {
+            .contact-wrapper {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .nav-links {
+                position: fixed;
+                top: var(--header-height);
+                left: 0;
+                width: 100%;
+                background-color: var(--white);
+                flex-direction: column;
+                padding: 40px 0;
+                box-shadow: var(--shadow-md);
+                transform: translateY(-150%);
+                transition: transform 0.3s ease;
+            }
+
+            .nav-links.active {
+                transform: translateY(0);
+            }
+
+            .mobile-menu-btn {
+                display: block;
+            }
+
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+
+            .footer-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .hero-buttons {
+                flex-direction: column;
+            }
+            
+            .footer-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
-<img src="Presentacion rentabilidad SSFF al 30.11.2025.jpg" style="width:140px; display:block; margin:20px auto;">
-<header>
-    <h1>XRISK – Dashboard de Indicadores de Riesgo</h1>
-    <p>Visualización ejecutiva – Power BI</p>
-</header>
 
-<section>
-    <iframe 
-        src="https://app.powerbi.com/view?r=eyJrIjoiNDBmZDUzN2QtNWU4Yy00Y2QzLTg0NDctMjMxNjRkYzZiMDdjIiwidCI6IjFlYmE0NDNmLTIzZTUtNDUzNC05MGQxLTA5NzZhYWJlODZhYyIsImMiOjR9"
-        allowFullScreen="true">
-    </iframe>
-</section>
+    <!-- NAVEGACIÓN -->
+    <header>
+        <div class="container nav-container">
+            <a href="#" class="logo">
+                <i class="ph-fill ph-shield-check"></i>
+                XRISK<span>.PE</span>
+            </a>
+            
+            <button class="mobile-menu-btn" aria-label="Abrir menú">
+                <i class="ph ph-list"></i>
+            </button>
 
+            <nav>
+                <ul class="nav-links">
+                    <li><a href="#inicio">Inicio</a></li>
+                    <li><a href="#nosotros">Nosotros</a></li>
+                    <li><a href="#servicios">Servicios</a></li>
+                    <li><a href="#contacto">Contacto</a></li>
+                    <li><a href="#contacto" class="btn btn-primary">Cotizar Ahora</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <!-- HERO SECTION -->
+        <section id="inicio" class="hero">
+            <div class="container hero-content">
+                <h1>Gestión de Riesgos y Soluciones Estratégicas</h1>
+                <p>Protegemos tu futuro con análisis de datos avanzados y consultoría experta en seguridad corporativa y compliance.</p>
+                <div class="hero-buttons">
+                    <a href="#servicios" class="btn btn-primary">Nuestros Servicios</a>
+                    <a href="#contacto" class="btn btn-outline">Contáctanos</a>
+                </div>
+            </div>
+        </section>
+
+        <!-- NOSOTROS -->
+        <section id="nosotros" class="section-padding features">
+            <div class="container features-grid">
+                <div class="feature-text">
+                    <h2>Líderes en Gestión de Riesgos</h2>
+                    <p>En XRISK, combinamos experiencia técnica con innovación para ofrecer soluciones que minimizan amenazas y maximizan oportunidades para tu empresa.</p>
+                    <p>Nuestro enfoque multidisciplinario garantiza una visión 360° de su organización.</p>
+                    
+                    <div class="feature-list">
+                        <div class="feature-item">
+                            <i class="ph-fill ph-check-circle"></i>
+                            <div>
+                                <strong>Expertos Certificados:</strong> Equipo con acreditaciones internacionales.
+                            </div>
+                        </div>
+                        <div class="feature-item">
+                            <i class="ph-fill ph-check-circle"></i>
+                            <div>
+                                <strong>Tecnología de Punta:</strong> Herramientas de análisis predictivo.
+                            </div>
+                        </div>
+                        <div class="feature-item">
+                            <i class="ph-fill ph-check-circle"></i>
+                            <div>
+                                <strong>Cumplimiento Normativo:</strong> Alineación con estándares locales e ISO.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="feature-img">
+                    <img src="https://picsum.photos/seed/xrisk_meeting/600/400.jpg" alt="Reunión corporativa XRISK">
+                </div>
+            </div>
+        </section>
+
+        <!-- ESTADÍSTICAS -->
+        <section class="stats">
+            <div class="container stats-grid">
+                <div class="stat-item">
+                    <h3>+10</h3>
+                    <p>Años de Experiencia</p>
+                </div>
+                <div class="stat-item">
+                    <h3>+200</h3>
+                    <p>Clientes Satisfechos</p>
+                </div>
+                <div class="stat-item">
+                    <h3>+500</h3>
+                    <p>Proyectos Ejecutados</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- SERVICIOS -->
+        <section id="servicios" class="section-padding services">
+            <div class="container">
+                <div class="section-title">
+                    <h2>Nuestros Servicios</h2>
+                    <p>Soluciones integrales diseñadas para adaptarse a las necesidades específicas de cada industria.</p>
+                </div>
+
+                <div class="services-grid">
+                    <!-- Servicio 1 -->
+                    <div class="service-card">
+                        <div class="service-icon">
+                            <i class="ph ph-shield-warning"></i>
+                        </div>
+                        <h3>Análisis de Riesgos</h3>
+                        <p>Identificación y evaluación detallada de vulnerabilidades operativas, financieras y de seguridad.</p>
+                    </div>
+
+                    <!-- Servicio 2 -->
+                    <div class="service-card">
+                        <div class="service-icon">
+                            <i class="ph ph-chart-line-up"></i>
+                        </div>
+                        <h3>Consultoría Estratégica</h3>
+                        <p>Planificación a largo plazo para mitigar riesgos emergentes y mejorar la resiliencia organizacional.</p>
+                    </div>
+
+                    <!-- Servicio 3 -->
+                    <div class="service-card">
+                        <div class="service-icon">
+                            <i class="ph ph-files"></i>
+                        </div>
+                        <h3>Cumplimiento & Compliance</h3>
+                        <p>Auditoría y asesoría legal para garantizar el cumplimiento de normativas vigentes en el Perú.</p>
+                    </div>
+
+                    <!-- Servicio 4 -->
+                    <div class="service-card">
+                        <div class="service-icon">
+                            <i class="ph ph-lock-key"></i>
+                        </div>
+                        <h3>Seguridad Corporativa</h3>
+                        <p>Protocolos de seguridad física y lógica para proteger activos, información y personal.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CONTACTO -->
+        <section id="contacto" class="section-padding contact">
+            <div class="container">
+                <div class="section-title">
+                    <h2>Hablemos de tu Seguridad</h2>
+                </div>
+                
+                <div class="contact-wrapper">
+                    <div class="contact-info">
+                        <h3>Información de Contacto</h3>
+                        <p style="margin-bottom: 30px; color: var(--text-light);">
+                            Estamos listos para asesorarte. Contáctanos para una evaluación inicial de riesgos sin costo.
+                        </p>
+                        
+                        <div class="contact-details">
+                            <div>
+                                <i class="ph-fill ph-map-pin"></i>
+                                <span>Av. Javier Prado Este 1234, San Borja, Lima, Perú</span>
+                            </div>
+                            <div>
+                                <i class="ph-fill ph-phone"></i>
+                                <span>+51 1 555 0199</span>
+                            </div>
+                            <div>
+                                <i class="ph-fill ph-envelope"></i>
+                                <span>contacto@xrisk.pe</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="contact-form">
+                        <form onsubmit="event.preventDefault(); alert('Gracias por tu mensaje. Nos pondremos en contacto pronto.');">
+                            <div class="form-group">
+                                <label for="name">Nombre Completo</label>
+                                <input type="text" id="name" placeholder="Tu nombre" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="email">Correo Electrónico</label>
+                                <input type="email" id="email" placeholder="ejemplo@empresa.com" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="message">Mensaje</label>
+                                <textarea id="message" rows="4" placeholder="¿En qué podemos ayudarte?" required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary" style="width: 100%;">Enviar Mensaje</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- FOOTER -->
+    <footer>
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <h4>XRISK</h4>
+                    <p>Consultoría líder en gestión de riesgos y seguridad corporativa en el Perú. Transformamos la incertidumbre en oportunidades estratégicas.</p>
+                </div>
+                
+                <div class="footer-col">
+                    <h5>Empresa</h5>
+                    <ul>
+                        <li><a href="#nosotros">Nosotros</a></li>
+                        <li><a href="#servicios">Servicios</a></li>
+                        <li><a href="#">Carreras</a></li>
+                        <li><a href="#">Blog</a></li>
+                    </ul>
+                </div>
+
+                <div class="footer-col">
+                    <h5>Servicios</h5>
+                    <ul>
+                        <li><a href="#">Riesgo Operativo</a></li>
+                        <li><a href="#">Ciberseguridad</a></li>
+                        <li><a href="#">Blanqueo de Capitales</a></li>
+                        <li><a href="#">Auditoría Interna</a></li>
+                    </ul>
+                </div>
+
+                <div class="footer-col">
+                    <h5>Legal</h5>
+                    <ul>
+                        <li><a href="#">Política de Privacidad</a></li>
+                        <li><a href="#">Términos y Condiciones</a></li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="copyright">
+                <p>&copy; 2023 XRISK Perú. Todos los derechos reservados.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- SCRIPT SIMPLE PARA MENÚ MÓVIL -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const menuBtn = document.querySelector('.mobile-menu-btn');
+            const navLinks = document.querySelector('.nav-links');
+            const icon = menuBtn.querySelector('i');
+
+            menuBtn.addEventListener('click', () => {
+                navLinks.classList.toggle('active');
+                
+                // Cambiar icono de lista a X
+                if (navLinks.classList.contains('active')) {
+                    icon.classList.remove('ph-list');
+                    icon.classList.add('ph-x');
+                } else {
+                    icon.classList.remove('ph-x');
+                    icon.classList.add('ph-list');
+                }
+            });
+
+            // Cerrar menú al hacer clic en un enlace
+            document.querySelectorAll('.nav-links a').forEach(link => {
+                link.addEventListener('click', () => {
+                    navLinks.classList.remove('active');
+                    icon.classList.remove('ph-x');
+                    icon.classList.add('ph-list');
+                });
+            });
+        });
+    </script>
 </body>
 </html>
+
 
 
