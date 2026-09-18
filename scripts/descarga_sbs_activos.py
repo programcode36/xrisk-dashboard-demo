@@ -1,37 +1,47 @@
 #!/usr/bin/env python3
 """
 Descarga los reportes B-2201 (Balance General) de la SBS, mes a mes, y
-extrae unicamente el bloque de ACTIVO por empresa bancaria (pagina 1,
-primeras ~50-60 filas, antes de que empiece PASIVO).
+extrae unicamente el bloque de ACTIVO por empresa bancaria (la parte de
+la hoja "Balance General" antes de que empiece "Pasivo").
 
-IMPORTANTE - leer antes de usar:
-- El host `intranet2.sbs.gob.pe` no es accesible desde este entorno (esta
-  bloqueado por la politica de red del sandbox y probablemente solo
-  responde dentro de la red de la SBS / Peru). Este script NO fue probado
-  contra un archivo real: se escribio con la mejor informacion disponible
-  sobre el formato tipico de estos reportes (tabla HTML servida con
-  extension .XLS, o binario .xls antiguo). Ejecuta primero el modo
-  --inspect (ver mas abajo) para validar la deteccion de filas/columnas
-  contra un archivo real y ajustar las constantes marcadas con TODO si
-  hace falta.
-- Los codigos de mes en el nombre de archivo (ej. "jl" = julio) pueden
-  no ser consistentes en todo el historico 2016-2026. El script prueba
-  varias variantes conocidas por mes y usa la primera que responda 200
-  con contenido valido.
+Formato real del archivo (verificado contra B-2201-jl2026.XLS, julio 2026):
+- Es un .xlsx real (Excel 2007+, zip) aunque la extension diga .XLS.
+- Tiene 2 hojas: "1" = Balance General (Activo + Pasivo + Patrimonio),
+  "2" = Estado de Ganancias y Perdidas. Este script solo usa la hoja 1.
+- Layout ancho: cada empresa bancaria ocupa 3 columnas contiguas
+  (Moneda Nacional, Moneda Extranjera, Total), con el nombre del banco
+  en la fila justo encima de la sub-cabecera "MN"/"ME"/"TOTAL". Hay
+  columnas separadoras en blanco entre bloques de bancos.
+- La columna 0 trae el nombre de la cuenta contable (DISPONIBLE, FONDOS
+  INTERBANCARIOS, ..., TOTAL ACTIVO) y se repite igual al inicio de cada
+  bloque de bancos (son solo para lectura visual al imprimir).
+- Debajo de "TOTAL ACTIVO" sigue, en la misma hoja, el bloque de Pasivo.
+
+IMPORTANTE sobre la descarga:
+- El host `intranet2.sbs.gob.pe` no es accesible desde el entorno de este
+  agente (bloqueado por politica de red del sandbox). El parseo de arriba
+  SI fue validado con un archivo real que subio el usuario, pero la
+  descarga automatica debe correrse desde una maquina con acceso real a
+  esa intranet (red de la SBS / VPN).
+- Los codigos de mes en el nombre de archivo (ej. "jl" = julio) pueden no
+  ser consistentes en todo el historico 2016-2026; el script prueba varias
+  variantes conocidas por mes.
 
 Uso:
     python descarga_sbs_activos.py                       # descarga todo el rango 2016-01 a 2026-07
     python descarga_sbs_activos.py --start 2020-01 --end 2021-12
-    python descarga_sbs_activos.py --inspect 2026-07      # solo descarga y vuelca el crudo de un mes, para calibrar
+    python descarga_sbs_activos.py --inspect 2026-07      # solo descarga y vuelca el crudo de un mes
+    python descarga_sbs_activos.py --local-file ruta.xls --fecha 2026-07  # parsea un archivo ya descargado, sin red
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import re
 import sys
 import time
-from dataclasses import dataclass
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -59,14 +69,6 @@ MESES = {
     12: ("Diciembre", ["dc", "di"]),
 }
 
-# Tope de filas a inspeccionar en la pagina 1 antes de recortar por PASIVO.
-MAX_FILAS_ACTIVO = 60
-
-# Palabras clave (en mayusculas, sin tildes) que marcan el fin del bloque
-# de activos / inicio del de pasivos en la primera columna.
-PALABRAS_CORTE_PASIVO = ("PASIVO",)
-PALABRA_TOTAL_ACTIVO = "TOTAL ACTIVO"
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -76,6 +78,15 @@ HEADERS = {
 
 RAW_DIR = Path("data/raw/sbs_b2201")
 PROCESSED_DIR = Path("data/processed")
+
+HOJA_BALANCE = 0  # primera hoja del libro ("1" = Balance General)
+
+
+def _sin_tildes(texto) -> str:
+    texto = str(texto)
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", texto) if not unicodedata.combining(c)
+    ).upper().strip()
 
 
 def _session() -> requests.Session:
@@ -117,81 +128,101 @@ def descargar_mes(session: requests.Session, year: int, month: int, cache_dir: P
     return None
 
 
-def _leer_primera_tabla(path: Path) -> pd.DataFrame:
-    """Lee la pagina 1 del reporte, sin importar si es HTML disfrazado de .xls o un binario real."""
+def _leer_hoja_balance(path: Path) -> pd.DataFrame:
+    """Lee la hoja de Balance General (hoja 1), sin importar si el archivo es
+    xlsx real, xls binario clasico, o HTML disfrazado de .xls (variantes
+    vistas historicamente en publicaciones de la SBS)."""
     contenido = path.read_bytes()
-    cabecera = contenido[:512].lstrip().lower()
 
+    if contenido[:2] == b"PK":
+        return pd.read_excel(io.BytesIO(contenido), sheet_name=HOJA_BALANCE, header=None, engine="openpyxl")
+
+    if contenido[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return pd.read_excel(io.BytesIO(contenido), sheet_name=HOJA_BALANCE, header=None, engine="xlrd")
+
+    cabecera = contenido[:512].lstrip().lower()
     if cabecera.startswith(b"<html") or b"<table" in cabecera or cabecera.startswith(b"<!doctype"):
         tablas = pd.read_html(io.BytesIO(contenido), header=None)
         return tablas[0]
 
-    # xls binario clasico (BIFF) o xlsx moderno
-    try:
-        return pd.read_excel(path, sheet_name=0, header=None, engine="xlrd")
-    except Exception:
-        return pd.read_excel(path, sheet_name=0, header=None)
+    # Formato no reconocido por firma: dejar que pandas intente detectar el engine.
+    return pd.read_excel(io.BytesIO(contenido), sheet_name=HOJA_BALANCE, header=None)
 
 
-@dataclass
-class BloqueActivos:
-    fecha: str
-    encabezados: list[str]
-    tabla: pd.DataFrame
-
-
-def extraer_bloque_activos(df: pd.DataFrame, fecha: str) -> BloqueActivos:
+def _ubicar_encabezados(df: pd.DataFrame) -> tuple[int, int, int]:
     """
-    Ubica, dentro de las primeras MAX_FILAS_ACTIVO filas, el sub-bloque de
-    ACTIVO por empresa bancaria y lo recorta antes de que aparezca PASIVO.
+    Devuelve (fila_banco, fila_submoneda, fila_total_activo).
 
-    Supuesto (a validar con --inspect contra un archivo real): la primera
-    columna trae el nombre de la cuenta contable y las columnas siguientes
-    una por cada empresa bancaria, con 1-2 filas de encabezado con el
-    nombre del banco.
+    fila_submoneda es la fila con las etiquetas 'MN' / 'ME' / 'TOTAL' que
+    aparecen 3 veces por banco. fila_banco es la fila inmediatamente
+    anterior, con el nombre de cada banco. fila_total_activo es la fila
+    donde la columna 0 dice 'TOTAL ACTIVO'.
     """
-    col0 = df.iloc[:, 0].astype(str).str.upper().str.strip()
-    col0_sin_tildes = (
-        col0.str.normalize("NFKD").str.encode("ascii", "ignore").str.decode("ascii")
-    )
+    fila_submoneda = None
+    for r in range(min(15, len(df))):
+        valores = df.iloc[r].astype(str).str.strip().str.upper()
+        if (valores == "MN").sum() >= 2 and (valores == "ME").sum() >= 2:
+            fila_submoneda = r
+            break
+    if fila_submoneda is None:
+        raise ValueError("No se encontro la fila de encabezado MN/ME/TOTAL en las primeras 15 filas")
 
-    limite = min(MAX_FILAS_ACTIVO, len(df))
-    ventana = col0_sin_tildes.iloc[:limite]
+    fila_banco = fila_submoneda - 1
 
-    fin = limite
-    idx_total = ventana[ventana.str.contains(PALABRA_TOTAL_ACTIVO, na=False)]
-    if not idx_total.empty:
-        fin = idx_total.index[0] + 1  # incluir la fila de TOTAL ACTIVO
-    else:
-        for palabra in PALABRAS_CORTE_PASIVO:
-            idx_pasivo = ventana[ventana.str.contains(palabra, na=False)]
-            if not idx_pasivo.empty:
-                fin = idx_pasivo.index[0]
-                break
+    col0 = df.iloc[:, 0].astype(str).map(_sin_tildes)
+    coincidencias = col0[col0 == "TOTAL ACTIVO"]
+    if coincidencias.empty:
+        raise ValueError("No se encontro la fila 'TOTAL ACTIVO'")
+    fila_total_activo = coincidencias.index[0]
 
-    # TODO: calibrar cuantas filas de encabezado hay realmente (aqui se
-    # asume 1 fila de encabezado con el nombre de cada banco en la fila 0).
-    fila_encabezado = 0
-    encabezados = df.iloc[fila_encabezado].astype(str).str.strip().tolist()
-
-    inicio_datos = fila_encabezado + 1
-    tabla = df.iloc[inicio_datos:fin].reset_index(drop=True)
-    tabla.columns = encabezados
-
-    return BloqueActivos(fecha=fecha, encabezados=encabezados, tabla=tabla)
+    return fila_banco, fila_submoneda, fila_total_activo
 
 
-def a_formato_largo(bloque: BloqueActivos) -> pd.DataFrame:
-    """Convierte el bloque ancho (cuenta x banco) a formato largo: fecha, cuenta, banco, valor."""
-    tabla = bloque.tabla.copy()
-    col_cuenta = tabla.columns[0]
-    tabla = tabla.rename(columns={col_cuenta: "cuenta"})
+def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
+    """
+    Extrae, de la hoja de Balance General, el bloque de Activo por empresa
+    bancaria y lo devuelve en formato largo:
+    fecha, banco, es_total, cuenta, moneda_nacional, moneda_extranjera, total
+    """
+    fila_banco, fila_submoneda, fila_total_activo = _ubicar_encabezados(df)
 
-    largo = tabla.melt(id_vars="cuenta", var_name="banco", value_name="valor")
-    largo["valor"] = pd.to_numeric(largo["valor"], errors="coerce")
-    largo["fecha"] = bloque.fecha
-    largo = largo.dropna(subset=["valor"])
-    return largo[["fecha", "banco", "cuenta", "valor"]]
+    fila_datos_ini = fila_submoneda + 2  # hay una fila en blanco entre el encabezado y los datos
+    fila_datos_fin = fila_total_activo + 1  # inclusive
+
+    submoneda = df.iloc[fila_submoneda].astype(str).str.strip().str.upper()
+    nombres_banco = df.iloc[fila_banco]
+
+    cuentas = df.iloc[fila_datos_ini:fila_datos_fin, 0].astype(str).str.strip()
+
+    bloques = []
+    ncols = df.shape[1]
+    for c in range(ncols):
+        if submoneda.iloc[c] != "MN":
+            continue
+        if c + 2 >= ncols or submoneda.iloc[c + 1] != "ME" or submoneda.iloc[c + 2] != "TOTAL":
+            continue
+        banco = nombres_banco.iloc[c]
+        if not isinstance(banco, str) or not banco.strip():
+            continue
+        banco = re.sub(r"\s+", " ", banco.strip())
+
+        sub = df.iloc[fila_datos_ini:fila_datos_fin, [c, c + 1, c + 2]].copy()
+        sub.columns = ["moneda_nacional", "moneda_extranjera", "total"]
+        sub.insert(0, "cuenta", cuentas.values)
+        sub.insert(0, "es_total", banco.lower().startswith("total"))
+        sub.insert(0, "banco", banco)
+        sub.insert(0, "fecha", fecha)
+        bloques.append(sub)
+
+    if not bloques:
+        raise ValueError("No se detecto ningun bloque de banco (MN/ME/TOTAL) en la hoja")
+
+    resultado = pd.concat(bloques, ignore_index=True)
+    for col in ("moneda_nacional", "moneda_extranjera", "total"):
+        resultado[col] = pd.to_numeric(resultado[col], errors="coerce")
+    # Las filas separadoras (subtitulos en blanco dentro del bloque de cuentas) no traen valores en ninguna moneda.
+    resultado = resultado.dropna(subset=["moneda_nacional", "moneda_extranjera", "total"], how="all")
+    return resultado
 
 
 def rango_meses(inicio: str, fin: str):
@@ -212,19 +243,34 @@ def main():
     ap.add_argument("--end", default="2026-07", help="Mes final YYYY-MM (default 2026-07, cierre julio 2026)")
     ap.add_argument("--sleep", type=float, default=1.0, help="Segundos de espera entre descargas")
     ap.add_argument("--inspect", metavar="YYYY-MM", help="Descarga y vuelca el crudo de un solo mes para calibrar la logica de recorte")
+    ap.add_argument("--local-file", metavar="RUTA", help="Parsea un archivo ya descargado localmente (sin red), usado junto con --fecha")
+    ap.add_argument("--fecha", metavar="YYYY-MM", help="Fecha a usar junto con --local-file")
     ap.add_argument("--outdir", default=str(PROCESSED_DIR), help="Carpeta de salida para los CSV procesados")
     args = ap.parse_args()
 
-    session = _session()
     salida = Path(args.outdir)
     salida.mkdir(parents=True, exist_ok=True)
+
+    if args.local_file:
+        if not args.fecha:
+            print("--local-file requiere --fecha YYYY-MM", file=sys.stderr)
+            sys.exit(1)
+        df_crudo = _leer_hoja_balance(Path(args.local_file))
+        activos = extraer_activos(df_crudo, args.fecha)
+        destino = salida / f"activos_{args.fecha}.csv"
+        activos.to_csv(destino, index=False)
+        print(f"Listo: {len(activos)} filas guardadas en {destino}")
+        print(activos.head(20).to_string())
+        return
+
+    session = _session()
 
     if args.inspect:
         year, month = (int(x) for x in args.inspect.split("-"))
         path = descargar_mes(session, year, month, RAW_DIR)
         if not path:
             sys.exit(1)
-        df = _leer_primera_tabla(path)
+        df = _leer_hoja_balance(path)
         volcado = salida / f"inspect_{year}-{month:02d}.csv"
         df.to_csv(volcado, index=False)
         print(f"Crudo volcado en {volcado} ({df.shape[0]} filas x {df.shape[1]} cols). Revisalo para ajustar las constantes del script.")
@@ -238,9 +284,8 @@ def main():
         if not path:
             continue
         try:
-            df_crudo = _leer_primera_tabla(path)
-            bloque = extraer_bloque_activos(df_crudo, fecha)
-            piezas.append(a_formato_largo(bloque))
+            df_crudo = _leer_hoja_balance(path)
+            piezas.append(extraer_activos(df_crudo, fecha))
         except Exception as exc:
             print(f"  [ERROR] No se pudo parsear {fecha}: {exc}", file=sys.stderr)
         time.sleep(args.sleep)
