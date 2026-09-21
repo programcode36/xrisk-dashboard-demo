@@ -266,9 +266,26 @@ def a_formato_ancho(largo: pd.DataFrame) -> pd.DataFrame:
     return ancho
 
 
-def ultimo_dia_mes(year: int, month: int) -> str:
-    """Fecha ISO (YYYY-MM-DD) del ultimo dia del mes, como en la planilla del usuario."""
-    return (pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthEnd(0)).date().isoformat()
+def ultimo_dia_mes(year: int, month: int):
+    """Fecha (date) del ultimo dia del mes, como en la planilla del usuario."""
+    return (pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthEnd(0)).date()
+
+
+def guardar_excel(df: pd.DataFrame, destino: Path) -> None:
+    """Guarda en .xlsx con la columna 'fecha' como fecha real formateada mmm-aa (ej. jul-26)."""
+    df.to_excel(destino, index=False, sheet_name="Activos")
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(destino)
+    ws = wb["Activos"]
+    col_fecha = df.columns.get_loc("fecha") + 1
+    for fila in range(2, ws.max_row + 1):
+        ws.cell(row=fila, column=col_fecha).number_format = "mmm-yy"
+    ws.freeze_panes = "A2"
+    ws.column_dimensions[ws.cell(row=1, column=col_fecha).column_letter].width = 10
+    ws.column_dimensions[ws.cell(row=1, column=df.columns.get_loc("banco") + 1).column_letter].width = 32
+    wb.save(destino)
 
 
 def rango_meses(inicio: str, fin: str):
@@ -305,8 +322,8 @@ def main():
         df_crudo = _leer_hoja_balance(Path(args.local_file))
         activos = extraer_activos(df_crudo, ultimo_dia_mes(year, month))
         ancho = a_formato_ancho(activos)
-        destino = salida / f"activos_{args.fecha}.csv"
-        ancho.to_csv(destino, index=False)
+        destino = salida / f"activos_{args.fecha}.xlsx"
+        guardar_excel(ancho, destino)
         print(f"Listo: {len(ancho)} filas guardadas en {destino}")
         print(ancho.head(9).to_string())
         return
@@ -344,8 +361,8 @@ def main():
         sys.exit(1)
 
     consolidado = pd.concat(piezas, ignore_index=True)
-    destino = salida / "activos_bancos_2016_2026.csv"
-    consolidado.to_csv(destino, index=False)
+    destino = salida / "activos_bancos_2016_2026.xlsx"
+    guardar_excel(consolidado, destino)
     print(f"\nListo: {len(consolidado)} filas guardadas en {destino}")
 
 
