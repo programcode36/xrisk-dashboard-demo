@@ -43,9 +43,12 @@ IMPORTANTE sobre la descarga:
   ser consistentes en todo el historico 2002-2026; el script prueba varias
   variantes conocidas por mes, pero no esta garantizado que cubran todos
   los años (avisar si algun mes da 404 con todas las variantes).
-- El consolidado final apila cada mes con sus propias cuentas (columnas),
-  sin exigir que coincidan en nombre ni en cantidad con las de otro mes:
-  donde un mes no tiene una cuenta que sí trae otro, esa celda queda vacia.
+- El consolidado final (activos_bancos_2002_2026.xlsx) copia cada mes con
+  su PROPIO encabezado de cuentas repetido justo antes de sus datos, uno
+  debajo del otro (ver guardar_excel_por_bloques()). NO se intenta alinear
+  las cuentas de distintos meses en columnas compartidas por nombre: cada
+  bloque de mes puede tener su propia cantidad/orden/texto de cuentas,
+  exactamente como en su archivo fuente.
 
 Uso:
     python descarga_sbs_activos.py                       # descarga todo el rango 2002-01 a 2026-07
@@ -373,20 +376,45 @@ def guardar_excel(df: pd.DataFrame, destino: Path) -> None:
     wb.save(destino)
 
 
-def _dedup_columnas(columnas: list) -> list:
+def guardar_excel_por_bloques(piezas: list[pd.DataFrame], destino: Path) -> None:
     """
-    Vuelve unicas (temporalmente) las etiquetas repetidas de una lista de
-    columnas, agregando un sufijo interno "__dupN" a partir de la 2da
-    aparicion. Necesario porque pandas no permite concatenar DataFrames de
-    distinta forma cuando alguno tiene columnas duplicadas (lanza
-    "Reindexing only valid with uniquely valued Index objects").
+    Guarda el consolidado multi-mes copiando cada mes con su PROPIO
+    encabezado de cuentas, uno debajo del otro (sin intentar alinear por
+    nombre las cuentas entre meses distintos, ya que el listado de cuentas
+    puede cambiar de un mes a otro en 24 años de historico). Formato:
+
+        fecha | banco | es_total | moneda | <cuentas del mes 1...>
+        <datos del mes 1>
+        fecha | banco | es_total | moneda | <cuentas del mes 2...>
+        <datos del mes 2>
+        ...
+
+    Se escribe directo con openpyxl (no via pandas.to_excel) porque cada
+    bloque puede tener una cantidad de columnas distinta, y porque los
+    nombres de cuenta se repiten dentro de un mismo mes (ej. "Otros" x2):
+    eso es valido como texto en una fila de Excel, pero no como Index de
+    columnas de un DataFrame de pandas.
     """
-    contador: dict = {}
-    resultado = []
-    for c in columnas:
-        contador[c] = contador.get(c, 0) + 1
-        resultado.append(c if contador[c] == 1 else f"{c}__dup{contador[c]}")
-    return resultado
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Activos"
+
+    fila = 0
+    for df in piezas:
+        fila += 1
+        for col_idx, nombre_col in enumerate(df.columns, start=1):
+            ws.cell(row=fila, column=col_idx, value=nombre_col)
+        for _, registro in df.iterrows():
+            fila += 1
+            for col_idx, valor in enumerate(registro, start=1):
+                ws.cell(row=fila, column=col_idx, value=valor)
+            ws.cell(row=fila, column=1).number_format = "mmm-yy"
+
+    ws.column_dimensions["A"].width = 10
+    ws.column_dimensions["B"].width = 32
+    wb.save(destino)
 
 
 def rango_meses(inicio: str, fin: str):
@@ -462,14 +490,12 @@ def main():
             continue
 
         # Cada mes aporta sus propias cuentas, en su propio orden y cantidad,
-        # sin exigir que coincidan con las de otros meses (el usuario
-        # confirmo que el listado de cuentas puede cambiar en 24 años de
-        # historico). Antes de apilar se renombran las columnas duplicadas
-        # DENTRO de este mismo mes (ej. "Otros" x2) con un sufijo interno,
-        # porque pd.concat no admite ejes con etiquetas repetidas cuando los
-        # meses no tienen exactamente las mismas columnas; el sufijo se
-        # quita de nuevo al final, sobre el consolidado ya armado.
-        ancho.columns = _dedup_columnas(list(ancho.columns))
+        # sin exigir que coincidan con las de otros meses (el listado de
+        # cuentas puede cambiar en 24 años de historico). Se apila tal cual,
+        # con su propio encabezado repetido antes de sus datos -ver
+        # guardar_excel_por_bloques()-, en vez de forzar un encabezado unico
+        # compartido que intentaria alinear cuentas de distintos meses por
+        # nombre.
         piezas.append(ancho)
         time.sleep(args.sleep)
 
@@ -477,8 +503,7 @@ def main():
         print("No se logro procesar ningun mes.", file=sys.stderr)
         sys.exit(1)
 
-    consolidado = pd.concat(piezas, ignore_index=True, sort=False)
-    consolidado.columns = [re.sub(r"__dup\d+$", "", c) if isinstance(c, str) else c for c in consolidado.columns]
+    total_filas = sum(len(p) for p in piezas)
 
     if meses_omitidos:
         print(f"\n[RESUMEN] {len(meses_omitidos)} mes(es) NO quedaron en el consolidado:", file=sys.stderr)
@@ -486,8 +511,8 @@ def main():
             print(f"   - {etiqueta}: {motivo}", file=sys.stderr)
 
     destino = salida / "activos_bancos_2002_2026.xlsx"
-    guardar_excel(consolidado, destino)
-    print(f"\nListo: {len(consolidado)} filas guardadas en {destino}")
+    guardar_excel_por_bloques(piezas, destino)
+    print(f"\nListo: {len(piezas)} mes(es), {total_filas} filas de datos guardadas en {destino}")
 
 
 if __name__ == "__main__":
