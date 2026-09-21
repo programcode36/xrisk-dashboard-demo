@@ -5,16 +5,27 @@ extrae unicamente el bloque de ACTIVO por empresa bancaria (la parte de
 la hoja "Balance General" antes de que empiece "Pasivo").
 
 Formato real del archivo (verificado contra B-2201-jl2026.XLS, julio 2026):
-- Es un .xlsx real (Excel 2007+, zip) aunque la extension diga .XLS.
-- Tiene 2 hojas: "1" = Balance General (Activo + Pasivo + Patrimonio),
-  "2" = Estado de Ganancias y Perdidas. Este script solo usa la hoja 1.
+- Es un .xlsx real (Excel 2007+, zip) aunque la extension diga .XLS. En
+  archivos antiguos (verificar 2002-2015) puede venir como .xls binario
+  clasico (BIFF) o incluso HTML disfrazado de .xls; el script detecta el
+  formato por firma de bytes y usa el engine correcto en cada caso.
+- El nombre de la hoja de Balance General varia con el tiempo: archivos
+  recientes usan "1"; archivos antiguos usan "05-BG" o "05-BG (P)" (con
+  variantes de espacios/parentesis). _elegir_hoja_balance() normaliza el
+  nombre y elige la hoja correcta automaticamente.
 - Layout ancho: cada empresa bancaria ocupa 3 columnas contiguas
   (Moneda Nacional, Moneda Extranjera, Total), con el nombre del banco
   en la fila justo encima de la sub-cabecera "MN"/"ME"/"TOTAL". Hay
-  columnas separadoras en blanco entre bloques de bancos.
+  columnas separadoras en blanco entre bloques de bancos. La fila donde
+  empieza este encabezado (y por lo tanto donde arranca el bloque de
+  cuentas) varia mes a mes (fila 4 a 8 aprox.); _ubicar_encabezados() la
+  busca dinamicamente en vez de asumir una fila fija.
 - La columna 0 trae el nombre de la cuenta contable (DISPONIBLE, FONDOS
   INTERBANCARIOS, ..., TOTAL ACTIVO) y se repite igual al inicio de cada
-  bloque de bancos (son solo para lectura visual al imprimir).
+  bloque de bancos (son solo para lectura visual al imprimir). Son 42
+  cuentas en total, siempre en el mismo orden segun verifico el usuario,
+  aunque dos nombres se repiten ("Otros" y "Provisiones" aparecen dos
+  veces cada uno en secciones distintas) — ver a_formato_ancho().
 - Debajo de "TOTAL ACTIVO" sigue, en la misma hoja, el bloque de Pasivo.
 
 IMPORTANTE sobre la descarga:
@@ -22,13 +33,20 @@ IMPORTANTE sobre la descarga:
   agente (bloqueado por politica de red del sandbox). El parseo de arriba
   SI fue validado con un archivo real que subio el usuario, pero la
   descarga automatica debe correrse desde una maquina con acceso real a
-  esa intranet (red de la SBS / VPN).
+  esa intranet (red de la SBS / VPN). Por lo tanto, correr el rango
+  2002-01 a 2026-07 completo (~295 meses) y revisar la salida es tarea
+  del usuario, no de este agente.
 - Los codigos de mes en el nombre de archivo (ej. "jl" = julio) pueden no
-  ser consistentes en todo el historico 2016-2026; el script prueba varias
-  variantes conocidas por mes.
+  ser consistentes en todo el historico 2002-2026; el script prueba varias
+  variantes conocidas por mes, pero no esta garantizado que cubran todos
+  los años (avisar si algun mes da 404 con todas las variantes).
+- Si algun mes tiene una cantidad de cuentas distinta a 42, o encabezados
+  de cuenta con texto distinto al de referencia, el script lo reporta por
+  stderr (WARN o ERROR) y lo excluye del consolidado en vez de arriesgarse
+  a mezclar columnas de cuentas distintas.
 
 Uso:
-    python descarga_sbs_activos.py                       # descarga todo el rango 2016-01 a 2026-07
+    python descarga_sbs_activos.py                       # descarga todo el rango 2002-01 a 2026-07
     python descarga_sbs_activos.py --start 2020-01 --end 2021-12
     python descarga_sbs_activos.py --inspect 2026-07      # solo descarga y vuelca el crudo de un mes
     python descarga_sbs_activos.py --local-file ruta.xls --fecha 2026-07  # parsea un archivo ya descargado, sin red
@@ -79,7 +97,10 @@ HEADERS = {
 RAW_DIR = Path("data/raw/sbs_b2201")
 PROCESSED_DIR = Path("data/processed")
 
-HOJA_BALANCE = 0  # primera hoja del libro ("1" = Balance General)
+# El usuario verifico manualmente que la cantidad de cuentas de Activo
+# (de DISPONIBLE a TOTAL ACTIVO) se mantiene en 42 en todo el historico
+# 2002-2026, aunque la fila donde empieza el bloque varie por mes.
+N_CUENTAS_ESPERADAS = 42
 
 
 def _sin_tildes(texto) -> str:
@@ -135,25 +156,50 @@ def descargar_mes(session: requests.Session, year: int, month: int, cache_dir: P
     return None
 
 
+OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+# Nombres de hoja observados para el Balance General a lo largo del historico:
+# archivos recientes usan "1"; archivos antiguos usan "05-BG" o "05-BG (P)"
+# (con variantes de espacios/parentesis). Se compara normalizando a
+# mayusculas y sin caracteres no alfanumericos.
+def _elegir_hoja_balance(nombres_hoja: list[str]) -> str:
+    normalizados = {n: re.sub(r"[^A-Z0-9]", "", n.upper()) for n in nombres_hoja}
+    for nombre, norm in normalizados.items():
+        if norm == "1":
+            return nombre
+    for nombre, norm in normalizados.items():
+        if norm.startswith("05BG"):
+            return nombre
+    # Ninguna variante conocida encontrada: usar la primera hoja y avisar.
+    print(
+        f"  [WARN] No se reconocio el nombre de hoja del Balance General entre {nombres_hoja}; "
+        f"se usa la primera hoja ('{nombres_hoja[0]}'). Verificar manualmente.",
+        file=sys.stderr,
+    )
+    return nombres_hoja[0]
+
+
 def _leer_hoja_balance(path: Path) -> pd.DataFrame:
-    """Lee la hoja de Balance General (hoja 1), sin importar si el archivo es
+    """Ubica y lee la hoja de Balance General, sin importar si el archivo es
     xlsx real, xls binario clasico, o HTML disfrazado de .xls (variantes
-    vistas historicamente en publicaciones de la SBS)."""
+    vistas historicamente en publicaciones de la SBS), ni como se llame la
+    hoja ("1" en archivos recientes, "05-BG"/"05-BG (P)" en antiguos)."""
     contenido = path.read_bytes()
 
     if contenido[:2] == b"PK":
-        return pd.read_excel(io.BytesIO(contenido), sheet_name=HOJA_BALANCE, header=None, engine="openpyxl")
+        engine = "openpyxl"
+    elif contenido[:8] == OLE2_MAGIC:
+        engine = "xlrd"
+    else:
+        cabecera = contenido[:512].lstrip().lower()
+        if cabecera.startswith(b"<html") or b"<table" in cabecera or cabecera.startswith(b"<!doctype"):
+            tablas = pd.read_html(io.BytesIO(contenido), header=None)
+            return tablas[0]
+        engine = None  # dejar que pandas intente detectar el engine
 
-    if contenido[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
-        return pd.read_excel(io.BytesIO(contenido), sheet_name=HOJA_BALANCE, header=None, engine="xlrd")
-
-    cabecera = contenido[:512].lstrip().lower()
-    if cabecera.startswith(b"<html") or b"<table" in cabecera or cabecera.startswith(b"<!doctype"):
-        tablas = pd.read_html(io.BytesIO(contenido), header=None)
-        return tablas[0]
-
-    # Formato no reconocido por firma: dejar que pandas intente detectar el engine.
-    return pd.read_excel(io.BytesIO(contenido), sheet_name=HOJA_BALANCE, header=None)
+    xl = pd.ExcelFile(io.BytesIO(contenido), engine=engine)
+    hoja = _elegir_hoja_balance(xl.sheet_names)
+    return xl.parse(hoja, header=None)
 
 
 def _ubicar_encabezados(df: pd.DataFrame) -> tuple[int, int, int]:
@@ -229,6 +275,16 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
         resultado[col] = pd.to_numeric(resultado[col], errors="coerce")
     # Las filas separadoras (subtitulos en blanco dentro del bloque de cuentas) no traen valores en ninguna moneda.
     resultado = resultado.dropna(subset=["moneda_nacional", "moneda_extranjera", "total"], how="all")
+
+    primer_banco = resultado["banco"].iloc[0]
+    n_cuentas = (resultado["banco"] == primer_banco).sum()
+    if n_cuentas != N_CUENTAS_ESPERADAS:
+        print(
+            f"  [WARN] {fecha}: se detectaron {n_cuentas} cuentas de activo (se esperaban "
+            f"{N_CUENTAS_ESPERADAS}). Revisar manualmente este mes.",
+            file=sys.stderr,
+        )
+
     return resultado
 
 
@@ -316,7 +372,7 @@ def rango_meses(inicio: str, fin: str):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--start", default="2016-01", help="Mes inicial YYYY-MM (default 2016-01)")
+    ap.add_argument("--start", default="2002-01", help="Mes inicial YYYY-MM (default 2002-01)")
     ap.add_argument("--end", default="2026-07", help="Mes final YYYY-MM (default 2026-07, cierre julio 2026)")
     ap.add_argument("--sleep", type=float, default=1.0, help="Segundos de espera entre descargas")
     ap.add_argument("--inspect", metavar="YYYY-MM", help="Descarga y vuelca el crudo de un solo mes para calibrar la logica de recorte")
@@ -356,18 +412,52 @@ def main():
         return
 
     piezas = []
+    columnas_referencia = None
+    etiqueta_referencia = None
+    meses_omitidos = []
     for year, month in rango_meses(args.start, args.end):
         etiqueta = f"{year}-{month:02d}"
         print(f"Procesando {etiqueta}...")
         path = descargar_mes(session, year, month, RAW_DIR)
         if not path:
+            meses_omitidos.append((etiqueta, "no se pudo descargar"))
             continue
         try:
             df_crudo = _leer_hoja_balance(path)
             activos = extraer_activos(df_crudo, ultimo_dia_mes(year, month))
-            piezas.append(a_formato_ancho(activos))
+            ancho = a_formato_ancho(activos)
         except Exception as exc:
             print(f"  [ERROR] No se pudo parsear {etiqueta}: {exc}", file=sys.stderr)
+            meses_omitidos.append((etiqueta, str(exc)))
+            time.sleep(args.sleep)
+            continue
+
+        if columnas_referencia is None:
+            columnas_referencia = list(ancho.columns)
+            etiqueta_referencia = etiqueta
+        elif len(ancho.columns) != len(columnas_referencia):
+            print(
+                f"  [ERROR] {etiqueta}: tiene {len(ancho.columns)} columnas de cuenta, "
+                f"pero {etiqueta_referencia} (referencia) tiene {len(columnas_referencia)}. "
+                f"Se omite este mes del consolidado para no mezclar cuentas distintas.",
+                file=sys.stderr,
+            )
+            meses_omitidos.append((etiqueta, "cantidad de cuentas distinta a la referencia"))
+            time.sleep(args.sleep)
+            continue
+        elif list(ancho.columns) != columnas_referencia:
+            # Mismos 42 nombres de cuenta pero en distinto texto/orden (ej. tildes,
+            # mayusculas). Se conservan los VALORES tal cual (por posicion) y se
+            # usan los encabezados de la referencia para poder apilar sin problema.
+            print(
+                f"  [WARN] {etiqueta}: los encabezados de cuenta difieren en texto de los de "
+                f"{etiqueta_referencia}, aunque la cantidad coincide. Se mantienen los valores "
+                f"y se homogeneizan los encabezados con los de la referencia.",
+                file=sys.stderr,
+            )
+            ancho.columns = columnas_referencia
+
+        piezas.append(ancho)
         time.sleep(args.sleep)
 
     if not piezas:
@@ -375,7 +465,13 @@ def main():
         sys.exit(1)
 
     consolidado = pd.concat(piezas, ignore_index=True)
-    destino = salida / "activos_bancos_2016_2026.xlsx"
+
+    if meses_omitidos:
+        print(f"\n[RESUMEN] {len(meses_omitidos)} mes(es) NO quedaron en el consolidado:", file=sys.stderr)
+        for etiqueta, motivo in meses_omitidos:
+            print(f"   - {etiqueta}: {motivo}", file=sys.stderr)
+
+    destino = salida / "activos_bancos_2002_2026.xlsx"
     guardar_excel(consolidado, destino)
     print(f"\nListo: {len(consolidado)} filas guardadas en {destino}")
 
