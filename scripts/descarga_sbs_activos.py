@@ -238,31 +238,45 @@ def a_formato_ancho(largo: pd.DataFrame) -> pd.DataFrame:
     de trabajo: una fila por banco x moneda (MN/ME/TOTAL) y una columna por
     cuenta contable, replicando el criterio manual del usuario (transponer,
     quitar columnas/filas en blanco, dejar 3 filas -MN/ME/TOTAL- por banco).
+
+    OJO: varias cuentas se repiten de nombre (ej. "Otros" aparece bajo
+    DISPONIBLE y de nuevo bajo Creditos Vigentes; "Provisiones" aparece
+    bajo Inversiones y de nuevo bajo Creditos). Por eso NO se puede pivotear
+    agrupando por el texto de "cuenta" (un pivot_table fusionaria ambas
+    filas en una sola columna y descartaria un valor). En su lugar se arma
+    la tabla por posicion: cada banco aporta sus cuentas en el mismo orden
+    de filas del Excel original, y esa lista (con nombres repetidos y
+    todo) se usa tal cual como encabezado de columnas.
     """
-    orden_cuentas = list(dict.fromkeys(largo["cuenta"]))
     orden_bancos = list(dict.fromkeys(largo["banco"]))
+    primer_banco = largo.loc[largo["banco"] == orden_bancos[0]]
+    orden_cuentas = primer_banco["cuenta"].tolist()
 
-    apilado = largo.melt(
-        id_vars=["fecha", "banco", "es_total", "cuenta"],
-        value_vars=["moneda_nacional", "moneda_extranjera", "total"],
-        var_name="moneda",
-        value_name="valor",
-    )
-    apilado["moneda"] = apilado["moneda"].map(
-        {"moneda_nacional": "MN", "moneda_extranjera": "ME", "total": "TOTAL"}
-    )
+    metas = []
+    filas_valores = []
+    for banco in orden_bancos:
+        bloque = largo.loc[largo["banco"] == banco].reset_index(drop=True)
+        if bloque["cuenta"].tolist() != orden_cuentas:
+            raise ValueError(
+                f"El banco '{banco}' no tiene las mismas cuentas, en el mismo orden, que '{orden_bancos[0]}'"
+            )
+        fecha = bloque["fecha"].iloc[0]
+        es_total = bloque["es_total"].iloc[0]
+        for col_origen, moneda in (
+            ("moneda_nacional", "MN"),
+            ("moneda_extranjera", "ME"),
+            ("total", "TOTAL"),
+        ):
+            metas.append((fecha, banco, es_total, moneda))
+            filas_valores.append(bloque[col_origen].tolist())
 
-    ancho = apilado.pivot_table(
-        index=["fecha", "banco", "es_total", "moneda"],
-        columns="cuenta",
-        values="valor",
-        aggfunc="first",
-    )
-    ancho = ancho.reindex(columns=orden_cuentas).reset_index()
+    meta = pd.DataFrame(metas, columns=["fecha", "banco", "es_total", "moneda"])
+    valores = pd.DataFrame(filas_valores, columns=orden_cuentas)
+    ancho = pd.concat([meta, valores], axis=1)
 
     ancho["banco"] = pd.Categorical(ancho["banco"], categories=orden_bancos, ordered=True)
     ancho["moneda"] = pd.Categorical(ancho["moneda"], categories=["MN", "ME", "TOTAL"], ordered=True)
-    ancho = ancho.sort_values(["fecha", "banco", "moneda"]).reset_index(drop=True)
+    ancho = ancho.sort_values(["fecha", "banco", "moneda"], kind="stable").reset_index(drop=True)
     return ancho
 
 
