@@ -232,6 +232,45 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
     return resultado
 
 
+def a_formato_ancho(largo: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convierte el formato largo (una fila por banco+cuenta) al formato ancho
+    de trabajo: una fila por banco x moneda (MN/ME/TOTAL) y una columna por
+    cuenta contable, replicando el criterio manual del usuario (transponer,
+    quitar columnas/filas en blanco, dejar 3 filas -MN/ME/TOTAL- por banco).
+    """
+    orden_cuentas = list(dict.fromkeys(largo["cuenta"]))
+    orden_bancos = list(dict.fromkeys(largo["banco"]))
+
+    apilado = largo.melt(
+        id_vars=["fecha", "banco", "es_total", "cuenta"],
+        value_vars=["moneda_nacional", "moneda_extranjera", "total"],
+        var_name="moneda",
+        value_name="valor",
+    )
+    apilado["moneda"] = apilado["moneda"].map(
+        {"moneda_nacional": "MN", "moneda_extranjera": "ME", "total": "TOTAL"}
+    )
+
+    ancho = apilado.pivot_table(
+        index=["fecha", "banco", "es_total", "moneda"],
+        columns="cuenta",
+        values="valor",
+        aggfunc="first",
+    )
+    ancho = ancho.reindex(columns=orden_cuentas).reset_index()
+
+    ancho["banco"] = pd.Categorical(ancho["banco"], categories=orden_bancos, ordered=True)
+    ancho["moneda"] = pd.Categorical(ancho["moneda"], categories=["MN", "ME", "TOTAL"], ordered=True)
+    ancho = ancho.sort_values(["fecha", "banco", "moneda"]).reset_index(drop=True)
+    return ancho
+
+
+def ultimo_dia_mes(year: int, month: int) -> str:
+    """Fecha ISO (YYYY-MM-DD) del ultimo dia del mes, como en la planilla del usuario."""
+    return (pd.Timestamp(year=year, month=month, day=1) + pd.offsets.MonthEnd(0)).date().isoformat()
+
+
 def rango_meses(inicio: str, fin: str):
     y0, m0 = (int(x) for x in inicio.split("-"))
     y1, m1 = (int(x) for x in fin.split("-"))
@@ -262,12 +301,14 @@ def main():
         if not args.fecha:
             print("--local-file requiere --fecha YYYY-MM", file=sys.stderr)
             sys.exit(1)
+        year, month = (int(x) for x in args.fecha.split("-"))
         df_crudo = _leer_hoja_balance(Path(args.local_file))
-        activos = extraer_activos(df_crudo, args.fecha)
+        activos = extraer_activos(df_crudo, ultimo_dia_mes(year, month))
+        ancho = a_formato_ancho(activos)
         destino = salida / f"activos_{args.fecha}.csv"
-        activos.to_csv(destino, index=False)
-        print(f"Listo: {len(activos)} filas guardadas en {destino}")
-        print(activos.head(20).to_string())
+        ancho.to_csv(destino, index=False)
+        print(f"Listo: {len(ancho)} filas guardadas en {destino}")
+        print(ancho.head(9).to_string())
         return
 
     session = _session()
@@ -285,16 +326,17 @@ def main():
 
     piezas = []
     for year, month in rango_meses(args.start, args.end):
-        fecha = f"{year}-{month:02d}"
-        print(f"Procesando {fecha}...")
+        etiqueta = f"{year}-{month:02d}"
+        print(f"Procesando {etiqueta}...")
         path = descargar_mes(session, year, month, RAW_DIR)
         if not path:
             continue
         try:
             df_crudo = _leer_hoja_balance(path)
-            piezas.append(extraer_activos(df_crudo, fecha))
+            activos = extraer_activos(df_crudo, ultimo_dia_mes(year, month))
+            piezas.append(a_formato_ancho(activos))
         except Exception as exc:
-            print(f"  [ERROR] No se pudo parsear {fecha}: {exc}", file=sys.stderr)
+            print(f"  [ERROR] No se pudo parsear {etiqueta}: {exc}", file=sys.stderr)
         time.sleep(args.sleep)
 
     if not piezas:
