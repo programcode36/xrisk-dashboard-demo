@@ -10,9 +10,9 @@ Formato real del archivo (verificado contra B-2201-jl2026.XLS, julio 2026):
   clasico (BIFF) o incluso HTML disfrazado de .xls; el script detecta el
   formato por firma de bytes y usa el engine correcto en cada caso.
 - El nombre de la hoja de Balance General varia con el tiempo: archivos
-  recientes usan "1"; archivos antiguos usan "05-BG" o "05-BG (P)" (con
-  variantes de espacios/parentesis). _elegir_hoja_balance() normaliza el
-  nombre y elige la hoja correcta automaticamente.
+  recientes usan "1"; archivos antiguos usan "05-BG", "05-BG (P)" o "BG"
+  (con variantes de espacios/parentesis). _elegir_hoja_balance() normaliza
+  el nombre y elige la hoja correcta automaticamente.
 - Layout ancho: cada empresa bancaria ocupa 3 columnas contiguas
   (Moneda Nacional, Moneda Extranjera, Total), con el nombre del banco
   en la fila justo encima de la sub-cabecera "MN"/"ME"/"TOTAL". Hay
@@ -22,10 +22,13 @@ Formato real del archivo (verificado contra B-2201-jl2026.XLS, julio 2026):
   busca dinamicamente en vez de asumir una fila fija.
 - La columna 0 trae el nombre de la cuenta contable (DISPONIBLE, FONDOS
   INTERBANCARIOS, ..., TOTAL ACTIVO) y se repite igual al inicio de cada
-  bloque de bancos (son solo para lectura visual al imprimir). Son 42
-  cuentas en total, siempre en el mismo orden segun verifico el usuario,
-  aunque dos nombres se repiten ("Otros" y "Provisiones" aparecen dos
-  veces cada uno en secciones distintas) — ver a_formato_ancho().
+  bloque de bancos (son solo para lectura visual al imprimir). Dentro de
+  un mismo mes hay nombres que se repiten (ej. "Otros" y "Provisiones"
+  aparecen dos veces cada uno en secciones distintas) — ver
+  a_formato_ancho(). NO se asume que la cantidad ni el orden de cuentas
+  sea igual entre meses distintos: cada mes se procesa con sus propias
+  cuentas, tal como vienen en su archivo, sin compararlas contra otros
+  meses ni descartar ninguna.
 - Debajo de "TOTAL ACTIVO" sigue, en la misma hoja, el bloque de Pasivo.
 
 IMPORTANTE sobre la descarga:
@@ -40,10 +43,9 @@ IMPORTANTE sobre la descarga:
   ser consistentes en todo el historico 2002-2026; el script prueba varias
   variantes conocidas por mes, pero no esta garantizado que cubran todos
   los años (avisar si algun mes da 404 con todas las variantes).
-- Si algun mes tiene una cantidad de cuentas distinta a 42, o encabezados
-  de cuenta con texto distinto al de referencia, el script lo reporta por
-  stderr (WARN o ERROR) y lo excluye del consolidado en vez de arriesgarse
-  a mezclar columnas de cuentas distintas.
+- El consolidado final apila cada mes con sus propias cuentas (columnas),
+  sin exigir que coincidan en nombre ni en cantidad con las de otro mes:
+  donde un mes no tiene una cuenta que sí trae otro, esa celda queda vacia.
 
 Uso:
     python descarga_sbs_activos.py                       # descarga todo el rango 2002-01 a 2026-07
@@ -81,7 +83,7 @@ MESES = {
     6: ("Junio", ["jn", "ju"]),
     7: ("Julio", ["jl"]),
     8: ("Agosto", ["ag"]),
-    9: ("Septiembre", ["se", "st", "sp"]),
+    9: ("Setiembre", ["se", "st", "sp"]),
     10: ("Octubre", ["oc", "ot"]),
     11: ("Noviembre", ["nv", "no"]),
     12: ("Diciembre", ["dc", "di"]),
@@ -96,11 +98,6 @@ HEADERS = {
 
 RAW_DIR = Path("data/raw/sbs_b2201")
 PROCESSED_DIR = Path("data/processed")
-
-# El usuario verifico manualmente que la cantidad de cuentas de Activo
-# (de DISPONIBLE a TOTAL ACTIVO) se mantiene en 42 en todo el historico
-# 2002-2026, aunque la fila donde empieza el bloque varie por mes.
-N_CUENTAS_ESPERADAS = 42
 
 
 def _sin_tildes(texto) -> str:
@@ -159,16 +156,16 @@ def descargar_mes(session: requests.Session, year: int, month: int, cache_dir: P
 OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 # Nombres de hoja observados para el Balance General a lo largo del historico:
-# archivos recientes usan "1"; archivos antiguos usan "05-BG" o "05-BG (P)"
-# (con variantes de espacios/parentesis). Se compara normalizando a
-# mayusculas y sin caracteres no alfanumericos.
+# archivos recientes usan "1"; archivos antiguos usan "05-BG", "05-BG (P)"
+# o simplemente "BG" (con variantes de espacios/parentesis). Se compara
+# normalizando a mayusculas y sin caracteres no alfanumericos.
 def _elegir_hoja_balance(nombres_hoja: list[str]) -> str:
     normalizados = {n: re.sub(r"[^A-Z0-9]", "", n.upper()) for n in nombres_hoja}
     for nombre, norm in normalizados.items():
         if norm == "1":
             return nombre
     for nombre, norm in normalizados.items():
-        if norm.startswith("05BG"):
+        if norm.startswith("05BG") or norm.startswith("BG"):
             return nombre
     # Ninguna variante conocida encontrada: usar la primera hoja y avisar.
     print(
@@ -275,16 +272,6 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
         resultado[col] = pd.to_numeric(resultado[col], errors="coerce")
     # Las filas separadoras (subtitulos en blanco dentro del bloque de cuentas) no traen valores en ninguna moneda.
     resultado = resultado.dropna(subset=["moneda_nacional", "moneda_extranjera", "total"], how="all")
-
-    primer_banco = resultado["banco"].iloc[0]
-    n_cuentas = (resultado["banco"] == primer_banco).sum()
-    if n_cuentas != N_CUENTAS_ESPERADAS:
-        print(
-            f"  [WARN] {fecha}: se detectaron {n_cuentas} cuentas de activo (se esperaban "
-            f"{N_CUENTAS_ESPERADAS}). Revisar manualmente este mes.",
-            file=sys.stderr,
-        )
-
     return resultado
 
 
@@ -358,6 +345,22 @@ def guardar_excel(df: pd.DataFrame, destino: Path) -> None:
     wb.save(destino)
 
 
+def _dedup_columnas(columnas: list) -> list:
+    """
+    Vuelve unicas (temporalmente) las etiquetas repetidas de una lista de
+    columnas, agregando un sufijo interno "__dupN" a partir de la 2da
+    aparicion. Necesario porque pandas no permite concatenar DataFrames de
+    distinta forma cuando alguno tiene columnas duplicadas (lanza
+    "Reindexing only valid with uniquely valued Index objects").
+    """
+    contador: dict = {}
+    resultado = []
+    for c in columnas:
+        contador[c] = contador.get(c, 0) + 1
+        resultado.append(c if contador[c] == 1 else f"{c}__dup{contador[c]}")
+    return resultado
+
+
 def rango_meses(inicio: str, fin: str):
     y0, m0 = (int(x) for x in inicio.split("-"))
     y1, m1 = (int(x) for x in fin.split("-"))
@@ -412,8 +415,6 @@ def main():
         return
 
     piezas = []
-    columnas_referencia = None
-    etiqueta_referencia = None
     meses_omitidos = []
     for year, month in rango_meses(args.start, args.end):
         etiqueta = f"{year}-{month:02d}"
@@ -432,31 +433,15 @@ def main():
             time.sleep(args.sleep)
             continue
 
-        if columnas_referencia is None:
-            columnas_referencia = list(ancho.columns)
-            etiqueta_referencia = etiqueta
-        elif len(ancho.columns) != len(columnas_referencia):
-            print(
-                f"  [ERROR] {etiqueta}: tiene {len(ancho.columns)} columnas de cuenta, "
-                f"pero {etiqueta_referencia} (referencia) tiene {len(columnas_referencia)}. "
-                f"Se omite este mes del consolidado para no mezclar cuentas distintas.",
-                file=sys.stderr,
-            )
-            meses_omitidos.append((etiqueta, "cantidad de cuentas distinta a la referencia"))
-            time.sleep(args.sleep)
-            continue
-        elif list(ancho.columns) != columnas_referencia:
-            # Mismos 42 nombres de cuenta pero en distinto texto/orden (ej. tildes,
-            # mayusculas). Se conservan los VALORES tal cual (por posicion) y se
-            # usan los encabezados de la referencia para poder apilar sin problema.
-            print(
-                f"  [WARN] {etiqueta}: los encabezados de cuenta difieren en texto de los de "
-                f"{etiqueta_referencia}, aunque la cantidad coincide. Se mantienen los valores "
-                f"y se homogeneizan los encabezados con los de la referencia.",
-                file=sys.stderr,
-            )
-            ancho.columns = columnas_referencia
-
+        # Cada mes aporta sus propias cuentas, en su propio orden y cantidad,
+        # sin exigir que coincidan con las de otros meses (el usuario
+        # confirmo que el listado de cuentas puede cambiar en 24 años de
+        # historico). Antes de apilar se renombran las columnas duplicadas
+        # DENTRO de este mismo mes (ej. "Otros" x2) con un sufijo interno,
+        # porque pd.concat no admite ejes con etiquetas repetidas cuando los
+        # meses no tienen exactamente las mismas columnas; el sufijo se
+        # quita de nuevo al final, sobre el consolidado ya armado.
+        ancho.columns = _dedup_columnas(list(ancho.columns))
         piezas.append(ancho)
         time.sleep(args.sleep)
 
@@ -464,7 +449,8 @@ def main():
         print("No se logro procesar ningun mes.", file=sys.stderr)
         sys.exit(1)
 
-    consolidado = pd.concat(piezas, ignore_index=True)
+    consolidado = pd.concat(piezas, ignore_index=True, sort=False)
+    consolidado.columns = [re.sub(r"__dup\d+$", "", c) if isinstance(c, str) else c for c in consolidado.columns]
 
     if meses_omitidos:
         print(f"\n[RESUMEN] {len(meses_omitidos)} mes(es) NO quedaron en el consolidado:", file=sys.stderr)
