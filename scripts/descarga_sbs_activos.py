@@ -199,14 +199,18 @@ def _leer_hoja_balance(path: Path) -> pd.DataFrame:
     return xl.parse(hoja, header=None)
 
 
-def _ubicar_encabezados(df: pd.DataFrame) -> tuple[int, int, int]:
+def _ubicar_encabezados(df: pd.DataFrame) -> tuple[int, int, int, int]:
     """
-    Devuelve (fila_banco, fila_submoneda, fila_total_activo).
+    Devuelve (fila_banco, fila_submoneda, fila_total_activo, col_cuenta).
 
     fila_submoneda es la fila con las etiquetas 'MN' / 'ME' / 'TOTAL' que
     aparecen 3 veces por banco. fila_banco es la fila inmediatamente
-    anterior, con el nombre de cada banco. fila_total_activo es la fila
-    donde la columna 0 dice 'TOTAL ACTIVO'.
+    anterior, con el nombre de cada banco. col_cuenta es la columna con el
+    nombre de la cuenta contable (normalmente la A, pero en algunos meses
+    esta corrida a la B u otra) y fila_total_activo es la fila donde esa
+    columna dice 'TOTAL ACTIVO'. col_cuenta se detecta buscando, entre las
+    columnas anteriores al primer bloque de banco, cual de ellas contiene
+    el texto 'TOTAL ACTIVO'.
     """
     fila_submoneda = None
     for r in range(min(15, len(df))):
@@ -219,13 +223,26 @@ def _ubicar_encabezados(df: pd.DataFrame) -> tuple[int, int, int]:
 
     fila_banco = fila_submoneda - 1
 
-    col0 = df.iloc[:, 0].astype(str).map(_sin_tildes)
-    coincidencias = col0[col0 == "TOTAL ACTIVO"]
-    if coincidencias.empty:
-        raise ValueError("No se encontro la fila 'TOTAL ACTIVO'")
-    fila_total_activo = coincidencias.index[0]
+    submoneda = df.iloc[fila_submoneda].astype(str).str.strip().str.upper()
+    primer_col_banco = next((c for c in range(df.shape[1]) if submoneda.iloc[c] == "MN"), None)
+    if primer_col_banco is None:
+        raise ValueError("No se encontro ninguna columna 'MN' en la fila de sub-encabezado")
 
-    return fila_banco, fila_submoneda, fila_total_activo
+    col_cuenta = None
+    fila_total_activo = None
+    for c in range(primer_col_banco):
+        columna = df.iloc[:, c].astype(str).map(_sin_tildes)
+        coincidencias = columna[columna == "TOTAL ACTIVO"]
+        if not coincidencias.empty:
+            col_cuenta = c
+            fila_total_activo = coincidencias.index[0]
+            break
+    if col_cuenta is None:
+        raise ValueError(
+            f"No se encontro la fila 'TOTAL ACTIVO' en ninguna de las columnas 0..{primer_col_banco - 1}"
+        )
+
+    return fila_banco, fila_submoneda, fila_total_activo, col_cuenta
 
 
 def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
@@ -234,7 +251,7 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
     bancaria y lo devuelve en formato largo:
     fecha, banco, es_total, cuenta, moneda_nacional, moneda_extranjera, total
     """
-    fila_banco, fila_submoneda, fila_total_activo = _ubicar_encabezados(df)
+    fila_banco, fila_submoneda, fila_total_activo, col_cuenta = _ubicar_encabezados(df)
 
     fila_datos_ini = fila_submoneda + 2  # hay una fila en blanco entre el encabezado y los datos
     fila_datos_fin = fila_total_activo + 1  # inclusive
@@ -242,7 +259,19 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
     submoneda = df.iloc[fila_submoneda].astype(str).str.strip().str.upper()
     nombres_banco = df.iloc[fila_banco]
 
-    cuentas = df.iloc[fila_datos_ini:fila_datos_fin, 0].astype(str).str.strip()
+    cuentas_crudo = df.iloc[fila_datos_ini:fila_datos_fin, col_cuenta]
+    # Las filas separadoras (subtitulos en blanco dentro del bloque de cuentas)
+    # se identifican por el TEXTO de la columna de cuenta (que esta en blanco
+    # para todos los bancos por igual), NO por los valores numericos de cada
+    # banco: un banco puede reportar blanco/guion en una cuenta real que si
+    # usa (no es separador), y filtrar por eso desalinearia la cantidad de
+    # cuentas entre bancos del mismo mes.
+    # OJO: no comparar via astype(str) == "nan": con pandas >= 2.x/3.x y el
+    # dtype "str" nativo, un NaN convertido a texto ya no compara igual a la
+    # cadena "nan" (aunque su repr se vea igual). Hay que chequear con
+    # notna() sobre el valor original.
+    filas_validas = cuentas_crudo.notna() & (cuentas_crudo.astype(str).str.strip() != "")
+    cuentas = cuentas_crudo[filas_validas].astype(str).str.strip()
 
     bloques = []
     ncols = df.shape[1]
@@ -258,6 +287,7 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
 
         sub = df.iloc[fila_datos_ini:fila_datos_fin, [c, c + 1, c + 2]].copy()
         sub.columns = ["moneda_nacional", "moneda_extranjera", "total"]
+        sub = sub[filas_validas.values]
         sub.insert(0, "cuenta", cuentas.values)
         sub.insert(0, "es_total", banco.lower().startswith("total"))
         sub.insert(0, "banco", banco)
@@ -270,8 +300,6 @@ def extraer_activos(df: pd.DataFrame, fecha: str) -> pd.DataFrame:
     resultado = pd.concat(bloques, ignore_index=True)
     for col in ("moneda_nacional", "moneda_extranjera", "total"):
         resultado[col] = pd.to_numeric(resultado[col], errors="coerce")
-    # Las filas separadoras (subtitulos en blanco dentro del bloque de cuentas) no traen valores en ninguna moneda.
-    resultado = resultado.dropna(subset=["moneda_nacional", "moneda_extranjera", "total"], how="all")
     return resultado
 
 
