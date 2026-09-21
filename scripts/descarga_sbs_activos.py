@@ -98,11 +98,18 @@ def _session() -> requests.Session:
 
 
 def construir_urls_candidatas(year: int, month: int) -> list[str]:
+    """
+    El nombre real observado (B-2201-jl2026.XLS, julio 2026) usa el año
+    completo de 4 digitos, no 2 como se asumio originalmente. Por las
+    dudas de que meses mas antiguos del historico usen el formato de 2
+    digitos, se prueban ambas variantes.
+    """
     nombre_mes, abreviados = MESES[month]
-    yy = f"{year % 100:02d}"
+    anios = [str(year), f"{year % 100:02d}"]
     return [
-        f"{BASE_URL}/{year}/{nombre_mes}/{CODIGO_REPORTE}-{abv}{yy}.XLS"
+        f"{BASE_URL}/{year}/{nombre_mes}/{CODIGO_REPORTE}-{abv}{anio}.XLS"
         for abv in abreviados
+        for anio in anios
     ]
 
 
