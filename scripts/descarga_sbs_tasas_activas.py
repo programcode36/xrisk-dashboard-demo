@@ -54,6 +54,8 @@ import sys
 import time
 from pathlib import Path
 
+import pandas as pd
+
 URL = "https://www.sbs.gob.pe/app/pp/EstadisticasSAEEPortal/Paginas/TIActivaTipoCreditoEmpresa.aspx?tip=B"
 
 PROCESSED_DIR = Path("data/processed")
@@ -146,14 +148,50 @@ def descargar_tasas(driver, carpeta_descargas: Path, fecha: str, moneda: str) ->
     return _esperar_descarga(carpeta_descargas, archivos_antes)
 
 
+def limpiar_tabla(path_crudo: Path, moneda: str) -> pd.DataFrame:
+    """
+    Limpia el archivo tal como lo exporta la pagina de la SBS (titulo,
+    subtitulo, columna en blanco a la izquierda, y nota al pie) y se
+    queda solo con la tabla: encabezado "Tasa Anual (%)" + bancos, filas
+    de datos, con una columna "Moneda" agregada justo despues de la
+    columna de tipo de credito. Verificado que coincide, valor por valor,
+    con una limpieza manual de referencia.
+    """
+    df = pd.read_excel(path_crudo, sheet_name=0, header=None)
+    df = df.loc[:, ~df.isna().all(axis=0)]  # quita la columna A, que viene siempre en blanco
+    df = df.reset_index(drop=True)
+
+    fila_header = None
+    for r in range(len(df)):
+        fila = df.iloc[r].astype(str).str.strip()
+        if (fila == "Tasa Anual (%)").any():
+            fila_header = r
+            break
+    if fila_header is None:
+        raise ValueError(f"No se encontro la fila de encabezado 'Tasa Anual (%)' en {path_crudo}")
+
+    encabezados = df.iloc[fila_header].tolist()
+
+    fila_fin = len(df)
+    for r in range(fila_header + 1, len(df)):
+        if pd.isna(df.iloc[r, 0]):  # primera fila en blanco despues de los datos = fin de la tabla
+            fila_fin = r
+            break
+
+    tabla = df.iloc[fila_header + 1 : fila_fin].reset_index(drop=True)
+    tabla.columns = encabezados
+    tabla.insert(1, "Moneda", moneda)
+    return tabla
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fecha", required=True, metavar="DD/MM/YYYY", help="Fecha a consultar, ej. 07/10/2026")
     ap.add_argument(
         "--moneda",
         choices=["MN", "ME", "ambas"],
-        default="MN",
-        help="MN = Moneda Nacional, ME = Moneda Extranjera, ambas = descarga las dos (default MN)",
+        default="ambas",
+        help="MN = solo Moneda Nacional, ME = solo Moneda Extranjera, ambas = las dos juntas en un solo Excel (default)",
     )
     ap.add_argument("--outdir", default=str(PROCESSED_DIR), help="Carpeta de salida final")
     args = ap.parse_args()
@@ -176,24 +214,36 @@ def main():
         print("Verifica que Chrome este instalado y que 'pip install selenium' se haya hecho bien.", file=sys.stderr)
         sys.exit(1)
 
+    tablas = []
     try:
         for moneda in monedas:
             print(f"Exportando tasas activas ({moneda}) al {args.fecha}...")
+            archivo_crudo = None
             try:
-                archivo_descargado = descargar_tasas(driver, carpeta_descargas, args.fecha, moneda)
+                archivo_crudo = descargar_tasas(driver, carpeta_descargas, args.fecha, moneda)
+                tabla = limpiar_tabla(archivo_crudo, moneda)
             except Exception as exc:
                 print(f"  [ERROR] {exc}", file=sys.stderr)
                 continue
-
-            dia, mes, anio = args.fecha.split("/")
-            extension = archivo_descargado.suffix or ".xls"
-            destino = salida / f"tasas_activas_bancos_{moneda}_{anio}-{mes}-{dia}{extension}"
-            archivo_descargado.replace(destino)
-            print(f"  OK: {destino}")
+            finally:
+                if archivo_crudo is not None and archivo_crudo.exists():
+                    archivo_crudo.unlink()
+            print(f"  OK: {len(tabla)} filas de {moneda}")
+            tablas.append(tabla)
     finally:
         driver.quit()
         if carpeta_descargas.exists() and not any(carpeta_descargas.iterdir()):
             carpeta_descargas.rmdir()
+
+    if not tablas:
+        print("No se logro descargar ninguna tabla.", file=sys.stderr)
+        sys.exit(1)
+
+    consolidado = pd.concat(tablas, ignore_index=True)
+    dia, mes, anio = args.fecha.split("/")
+    destino = salida / f"tasas_activas_bancos_{anio}-{mes}-{dia}.xlsx"
+    consolidado.to_excel(destino, sheet_name="Reporte", index=False)
+    print(f"\nListo: {len(consolidado)} filas guardadas en {destino}")
 
 
 if __name__ == "__main__":
