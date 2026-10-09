@@ -184,6 +184,57 @@ def limpiar_tabla(path_crudo: Path, moneda: str) -> pd.DataFrame:
     return tabla
 
 
+def _es_tipo_credito(texto) -> bool:
+    """
+    Distingue una fila de "tipo de credito" (ej. 'Corporativos', 'Grandes
+    Empresas', 'Consumo') de sus sub-items (ej. 'Descuentos', 'Prestamos
+    hasta 30 dias'): en el archivo de la SBS, los tipos de credito vienen
+    con 8 o mas espacios de sangria al inicio del texto, y los sub-items
+    con 5. Verificado contra el archivo real (9-10 espacios en los tipos
+    de credito, 5 en los sub-items, para las 7 categorias del reporte).
+    """
+    if not isinstance(texto, str):
+        return False
+    return (len(texto) - len(texto.lstrip(" "))) >= 8
+
+
+def guardar_excel(df: pd.DataFrame, fecha, destino: Path) -> None:
+    """
+    Guarda el consolidado con una columna "Fecha" agregada al inicio
+    (formateada dd/mm/aaaa), encabezado en negrita, y en negrita solo la
+    celda de "Tasa Anual (%)" de las filas que son tipo de credito (no
+    sus sub-items).
+    """
+    df = df.copy()
+    col_tipo_credito = df.columns[0]  # "Tasa Anual (%)", antes de insertar Fecha
+    es_categoria = df[col_tipo_credito].map(_es_tipo_credito)
+    df.insert(0, "Fecha", fecha)
+
+    df.to_excel(destino, sheet_name="Reporte", index=False)
+
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font
+
+    wb = load_workbook(destino)
+    ws = wb["Reporte"]
+
+    negrita = Font(bold=True)
+    for celda in ws[1]:
+        celda.font = negrita
+
+    col_fecha = 1
+    col_tipo = 2  # "Fecha" queda en la A, "Tasa Anual (%)" pasa a la B
+    for fila_excel in range(2, ws.max_row + 1):
+        ws.cell(row=fila_excel, column=col_fecha).number_format = "dd/mm/yyyy"
+        if es_categoria.iloc[fila_excel - 2]:
+            ws.cell(row=fila_excel, column=col_tipo).font = negrita
+
+    ws.column_dimensions["A"].width = 11
+    ws.column_dimensions["B"].width = 32
+    ws.freeze_panes = "A2"
+    wb.save(destino)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fecha", required=True, metavar="DD/MM/YYYY", help="Fecha a consultar, ej. 07/10/2026")
@@ -241,8 +292,9 @@ def main():
 
     consolidado = pd.concat(tablas, ignore_index=True)
     dia, mes, anio = args.fecha.split("/")
+    fecha_obj = pd.Timestamp(year=int(anio), month=int(mes), day=int(dia)).date()
     destino = salida / f"tasas_activas_bancos_{anio}-{mes}-{dia}.xlsx"
-    consolidado.to_excel(destino, sheet_name="Reporte", index=False)
+    guardar_excel(consolidado, fecha_obj, destino)
     print(f"\nListo: {len(consolidado)} filas guardadas en {destino}")
 
 
