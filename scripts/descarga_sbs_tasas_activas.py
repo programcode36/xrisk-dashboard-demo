@@ -43,7 +43,9 @@ compatible automaticamente, no hace falta instalarlo a mano) y
 Uso:
     python descarga_sbs_tasas_activas.py --fecha 07/10/2026
     python descarga_sbs_tasas_activas.py --fecha 07/10/2026 --moneda ME
-    python descarga_sbs_tasas_activas.py --fecha 07/10/2026 --moneda ambas
+    # varias fechas en un solo Excel, apiladas bajo un unico encabezado
+    # compartido (se ordenan cronologicamente sin importar el orden dado):
+    python descarga_sbs_tasas_activas.py --fecha 06/10/2026 --fecha 07/10/2026
 """
 
 from __future__ import annotations
@@ -148,14 +150,18 @@ def descargar_tasas(driver, carpeta_descargas: Path, fecha: str, moneda: str) ->
     return _esperar_descarga(carpeta_descargas, archivos_antes)
 
 
-def limpiar_tabla(path_crudo: Path, moneda: str) -> pd.DataFrame:
+def limpiar_tabla(path_crudo: Path, fecha, moneda: str) -> pd.DataFrame:
     """
     Limpia el archivo tal como lo exporta la pagina de la SBS (titulo,
     subtitulo, columna en blanco a la izquierda, y nota al pie) y se
     queda solo con la tabla: encabezado "Tasa Anual (%)" + bancos, filas
-    de datos, con una columna "Moneda" agregada justo despues de la
-    columna de tipo de credito. Verificado que coincide, valor por valor,
-    con una limpieza manual de referencia.
+    de datos, con columnas "Fecha" y "Moneda" agregadas al inicio.
+    Verificado que coincide, valor por valor, con una limpieza manual de
+    referencia.
+
+    `fecha` es un objeto date (no string), para que esa misma columna
+    quede lista para apilar varias fechas distintas bajo un unico
+    encabezado compartido (ver guardar_excel()).
     """
     df = pd.read_excel(path_crudo, sheet_name=0, header=None)
     df = df.loc[:, ~df.isna().all(axis=0)]  # quita la columna A, que viene siempre en blanco
@@ -181,6 +187,7 @@ def limpiar_tabla(path_crudo: Path, moneda: str) -> pd.DataFrame:
     tabla = df.iloc[fila_header + 1 : fila_fin].reset_index(drop=True)
     tabla.columns = encabezados
     tabla.insert(1, "Moneda", moneda)
+    tabla.insert(0, "Fecha", fecha)
     return tabla
 
 
@@ -198,46 +205,58 @@ def _es_tipo_credito(texto) -> bool:
     return (len(texto) - len(texto.lstrip(" "))) >= 8
 
 
-def guardar_excel(df: pd.DataFrame, fecha, destino: Path) -> None:
+def guardar_excel_por_fecha(tablas_por_fecha: list[pd.DataFrame], destino: Path) -> None:
     """
-    Guarda el consolidado con una columna "Fecha" agregada al inicio
-    (formateada dd/mm/aaaa), encabezado en negrita, y en negrita solo la
-    celda de "Tasa Anual (%)" de las filas que son tipo de credito (no
-    sus sub-items).
+    Guarda el resultado con un encabezado propio por cada FECHA (no por
+    moneda: MN y ME de una misma fecha comparten un solo encabezado,
+    porque ya vienen juntas en cada DataFrame de `tablas_por_fecha`),
+    repetido justo antes de los datos de esa fecha, apilados uno debajo
+    del otro. En cada bloque: encabezado en negrita, columna Fecha
+    formateada dd/mm/aaaa, y en negrita solo la celda de "Tasa Anual (%)"
+    de las filas que son tipo de credito (no sus sub-items).
     """
-    df = df.copy()
-    col_tipo_credito = df.columns[0]  # "Tasa Anual (%)", antes de insertar Fecha
-    es_categoria = df[col_tipo_credito].map(_es_tipo_credito)
-    df.insert(0, "Fecha", fecha)
-
-    df.to_excel(destino, sheet_name="Reporte", index=False)
-
-    from openpyxl import load_workbook
+    from openpyxl import Workbook
     from openpyxl.styles import Font
 
-    wb = load_workbook(destino)
-    ws = wb["Reporte"]
-
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reporte"
     negrita = Font(bold=True)
-    for celda in ws[1]:
-        celda.font = negrita
 
-    col_fecha = 1
-    col_tipo = 2  # "Fecha" queda en la A, "Tasa Anual (%)" pasa a la B
-    for fila_excel in range(2, ws.max_row + 1):
-        ws.cell(row=fila_excel, column=col_fecha).number_format = "dd/mm/yyyy"
-        if es_categoria.iloc[fila_excel - 2]:
-            ws.cell(row=fila_excel, column=col_tipo).font = negrita
+    fila = 0
+    for df in tablas_por_fecha:
+        col_fecha_idx = list(df.columns).index("Fecha") + 1
+        col_tipo_idx = list(df.columns).index("Tasa Anual (%)") + 1
+        es_categoria = df["Tasa Anual (%)"].map(_es_tipo_credito)
+
+        fila += 1
+        for col_idx, nombre_col in enumerate(df.columns, start=1):
+            ws.cell(row=fila, column=col_idx, value=nombre_col).font = negrita
+
+        for i, (_, registro) in enumerate(df.iterrows()):
+            fila += 1
+            for col_idx, valor in enumerate(registro, start=1):
+                ws.cell(row=fila, column=col_idx, value=valor)
+            ws.cell(row=fila, column=col_fecha_idx).number_format = "dd/mm/yyyy"
+            if es_categoria.iloc[i]:
+                ws.cell(row=fila, column=col_tipo_idx).font = negrita
 
     ws.column_dimensions["A"].width = 11
     ws.column_dimensions["B"].width = 32
-    ws.freeze_panes = "A2"
     wb.save(destino)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--fecha", required=True, metavar="DD/MM/YYYY", help="Fecha a consultar, ej. 07/10/2026")
+    ap.add_argument(
+        "--fecha",
+        required=True,
+        action="append",
+        metavar="DD/MM/YYYY",
+        help="Fecha a consultar, ej. 07/10/2026. Se puede repetir para varias fechas "
+        "(ej. --fecha 06/10/2026 --fecha 07/10/2026): se procesan en orden cronologico "
+        "y se apilan todas bajo un unico encabezado compartido.",
+    )
     ap.add_argument(
         "--moneda",
         choices=["MN", "ME", "ambas"],
@@ -247,9 +266,16 @@ def main():
     ap.add_argument("--outdir", default=str(PROCESSED_DIR), help="Carpeta de salida final")
     args = ap.parse_args()
 
-    if not re.match(r"^\d{2}/\d{2}/\d{4}$", args.fecha):
-        print("La fecha debe tener el formato DD/MM/YYYY, ej. 07/10/2026", file=sys.stderr)
-        sys.exit(1)
+    for f in args.fecha:
+        if not re.match(r"^\d{2}/\d{2}/\d{4}$", f):
+            print(f"La fecha '{f}' debe tener el formato DD/MM/YYYY, ej. 07/10/2026", file=sys.stderr)
+            sys.exit(1)
+
+    def _clave_orden(f: str):
+        dia, mes, anio = f.split("/")
+        return (int(anio), int(mes), int(dia))
+
+    fechas = sorted(set(args.fecha), key=_clave_orden)
 
     salida = Path(args.outdir)
     salida.mkdir(parents=True, exist_ok=True)
@@ -265,37 +291,48 @@ def main():
         print("Verifica que Chrome este instalado y que 'pip install selenium' se haya hecho bien.", file=sys.stderr)
         sys.exit(1)
 
-    tablas = []
+    tablas_por_fecha = []
     try:
-        for moneda in monedas:
-            print(f"Exportando tasas activas ({moneda}) al {args.fecha}...")
-            archivo_crudo = None
-            try:
-                archivo_crudo = descargar_tasas(driver, carpeta_descargas, args.fecha, moneda)
-                tabla = limpiar_tabla(archivo_crudo, moneda)
-            except Exception as exc:
-                print(f"  [ERROR] {exc}", file=sys.stderr)
-                continue
-            finally:
-                if archivo_crudo is not None and archivo_crudo.exists():
-                    archivo_crudo.unlink()
-            print(f"  OK: {len(tabla)} filas de {moneda}")
-            tablas.append(tabla)
+        for fecha_str in fechas:
+            dia, mes, anio = fecha_str.split("/")
+            fecha_obj = pd.Timestamp(year=int(anio), month=int(mes), day=int(dia)).date()
+            tablas_moneda = []
+            for moneda in monedas:
+                print(f"Exportando tasas activas ({moneda}) al {fecha_str}...")
+                archivo_crudo = None
+                try:
+                    archivo_crudo = descargar_tasas(driver, carpeta_descargas, fecha_str, moneda)
+                    tabla = limpiar_tabla(archivo_crudo, fecha_obj, moneda)
+                except Exception as exc:
+                    print(f"  [ERROR] {exc}", file=sys.stderr)
+                    continue
+                finally:
+                    if archivo_crudo is not None and archivo_crudo.exists():
+                        archivo_crudo.unlink()
+                print(f"  OK: {len(tabla)} filas de {moneda} al {fecha_str}")
+                tablas_moneda.append(tabla)
+            if tablas_moneda:
+                # MN y ME de una misma fecha comparten un solo encabezado
+                tablas_por_fecha.append(pd.concat(tablas_moneda, ignore_index=True))
     finally:
         driver.quit()
         if carpeta_descargas.exists() and not any(carpeta_descargas.iterdir()):
             carpeta_descargas.rmdir()
 
-    if not tablas:
+    if not tablas_por_fecha:
         print("No se logro descargar ninguna tabla.", file=sys.stderr)
         sys.exit(1)
 
-    consolidado = pd.concat(tablas, ignore_index=True)
-    dia, mes, anio = args.fecha.split("/")
-    fecha_obj = pd.Timestamp(year=int(anio), month=int(mes), day=int(dia)).date()
-    destino = salida / f"tasas_activas_bancos_{anio}-{mes}-{dia}.xlsx"
-    guardar_excel(consolidado, fecha_obj, destino)
-    print(f"\nListo: {len(consolidado)} filas guardadas en {destino}")
+    total_filas = sum(len(t) for t in tablas_por_fecha)
+    dia0, mes0, anio0 = fechas[0].split("/")
+    if len(fechas) == 1:
+        nombre_fecha = f"{anio0}-{mes0}-{dia0}"
+    else:
+        diaN, mesN, anioN = fechas[-1].split("/")
+        nombre_fecha = f"{anio0}-{mes0}-{dia0}_a_{anioN}-{mesN}-{diaN}"
+    destino = salida / f"tasas_activas_bancos_{nombre_fecha}.xlsx"
+    guardar_excel_por_fecha(tablas_por_fecha, destino)
+    print(f"\nListo: {total_filas} filas guardadas en {destino}")
 
 
 if __name__ == "__main__":
