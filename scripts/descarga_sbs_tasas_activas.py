@@ -43,9 +43,12 @@ compatible automaticamente, no hace falta instalarlo a mano) y
 Uso:
     python descarga_sbs_tasas_activas.py --fecha 07/10/2026
     python descarga_sbs_tasas_activas.py --fecha 07/10/2026 --moneda ME
-    # varias fechas en un solo Excel, apiladas bajo un unico encabezado
-    # compartido (se ordenan cronologicamente sin importar el orden dado):
+    # varias fechas sueltas (se ordenan cronologicamente sin importar el
+    # orden dado), cada una con su propio encabezado repetido:
     python descarga_sbs_tasas_activas.py --fecha 06/10/2026 --fecha 07/10/2026
+    # rango de fechas: descarga solo dias habiles (lunes a viernes),
+    # saltando sabados y domingos automaticamente:
+    python descarga_sbs_tasas_activas.py --inicio 29/09/2026 --fin 07/10/2026
 """
 
 from __future__ import annotations
@@ -250,13 +253,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "--fecha",
-        required=True,
         action="append",
         metavar="DD/MM/YYYY",
         help="Fecha a consultar, ej. 07/10/2026. Se puede repetir para varias fechas "
-        "(ej. --fecha 06/10/2026 --fecha 07/10/2026): se procesan en orden cronologico "
-        "y se apilan todas bajo un unico encabezado compartido.",
+        "(ej. --fecha 06/10/2026 --fecha 07/10/2026): se procesan en orden cronologico, "
+        "cada una con su propio encabezado repetido. Alternativa a --inicio/--fin.",
     )
+    ap.add_argument(
+        "--inicio",
+        metavar="DD/MM/YYYY",
+        help="Fecha inicial de un rango (inclusive). Se combina con --fin; descarga solo "
+        "dias habiles (lunes a viernes), saltando sabados y domingos automaticamente.",
+    )
+    ap.add_argument("--fin", metavar="DD/MM/YYYY", help="Fecha final de un rango (inclusive), junto con --inicio.")
     ap.add_argument(
         "--moneda",
         choices=["MN", "ME", "ambas"],
@@ -266,7 +275,7 @@ def main():
     ap.add_argument("--outdir", default=str(PROCESSED_DIR), help="Carpeta de salida final")
     args = ap.parse_args()
 
-    for f in args.fecha:
+    def _validar_formato(f: str):
         if not re.match(r"^\d{2}/\d{2}/\d{4}$", f):
             print(f"La fecha '{f}' debe tener el formato DD/MM/YYYY, ej. 07/10/2026", file=sys.stderr)
             sys.exit(1)
@@ -275,7 +284,28 @@ def main():
         dia, mes, anio = f.split("/")
         return (int(anio), int(mes), int(dia))
 
-    fechas = sorted(set(args.fecha), key=_clave_orden)
+    if args.inicio and args.fin:
+        _validar_formato(args.inicio)
+        _validar_formato(args.fin)
+        d0, m0, a0 = args.inicio.split("/")
+        d1, m1, a1 = args.fin.split("/")
+        # bdate_range genera solo dias habiles (lunes a viernes); no
+        # tiene en cuenta feriados peruanos, solo fines de semana, tal
+        # como se pidio.
+        rango = pd.bdate_range(
+            start=f"{a0}-{m0}-{d0}", end=f"{a1}-{m1}-{d1}"
+        )
+        if rango.empty:
+            print("El rango --inicio/--fin no contiene ningun dia habil (lunes a viernes).", file=sys.stderr)
+            sys.exit(1)
+        fechas = [d.strftime("%d/%m/%Y") for d in rango]
+    elif args.fecha:
+        for f in args.fecha:
+            _validar_formato(f)
+        fechas = sorted(set(args.fecha), key=_clave_orden)
+    else:
+        print("Se necesita --fecha (una o varias) o --inicio/--fin.", file=sys.stderr)
+        sys.exit(1)
 
     salida = Path(args.outdir)
     salida.mkdir(parents=True, exist_ok=True)
