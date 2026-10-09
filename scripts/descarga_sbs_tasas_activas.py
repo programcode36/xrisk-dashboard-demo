@@ -7,35 +7,38 @@ https://www.sbs.gob.pe/app/pp/EstadisticasSAEEPortal/Paginas/TIActivaTipoCredito
 
 A diferencia de los reportes B-2201/B-2401 (archivos .XLS fijos en la
 intranet), esta es una pagina web dinamica tipo ASP.NET (Telerik
-RadControls), y ademas esta protegida por Incapsula (firewall/anti-bots):
-una peticion simple con `requests` (sin pasar antes por un navegador real)
-recibe una pagina de bloqueo de ~800 bytes en vez del contenido real,
-aunque el status HTTP sea 200. Verificado con una prueba real del
-usuario.
+RadControls), protegida por Incapsula (firewall/anti-bots).
 
-Por eso el script funciona en DOS ETAPAS:
-1. Abre un navegador real (Selenium + Chrome) para cargar la pagina. El
-   navegador ejecuta el JavaScript del reto de Incapsula de forma normal
-   y el sitio le entrega cookies validas de "no soy un bot". Se toman
-   esas cookies (y el mismo User-Agent del navegador, Incapsula tambien
-   valida que coincida) y se cierra el navegador: ya no hace falta para
-   el resto.
-2. Con esas cookies, se arma una sesion de `requests` normal y se replica
-   el boton "Exportar" (id ctl00_cphContent_btnExportar), que en el HTML
-   real dispara un POSTBACK COMPLETO de ASP.NET (no AJAX parcial): el
-   servidor responde directamente con el archivo Excel. Se hace un GET
-   fresco antes de cada POST para tomar un __VIEWSTATE/__EVENTVALIDATION
-   validos (cambian en cada carga de pagina), y se sobreescriben solo los
-   campos que nos interesan:
-     ctl00$cphContent$rdpDate              -> fecha ISO (YYYY-MM-DD)
-     ctl00$cphContent$rdpDate$dateInput    -> fecha visible (DD/MM/YYYY)
-     ctl00$cphContent$hdTipoMoneda         -> "MN" o "ME"
-     ctl00$cphContent$hdTipoEntidad        -> "B" (Bancos; coincide con
-                                               el parametro ?tip=B de la URL)
-     ctl00$cphContent$btnExportar          -> "Exportar"
+Historial de intentos (para quien edite esto despues):
+1. Peticion directa con `requests`: Incapsula devuelve una pagina de
+   bloqueo de ~800 bytes (status 200, pero "Incapsula incident...") en
+   vez del contenido real. Confirmado con una prueba real.
+2. Abrir Chrome con Selenium solo para "resolver" el reto y despues pasar
+   las cookies a una sesion de `requests`: Incapsula lo sigue bloqueando.
+   Probablemente porque tambien valida el fingerprint TLS/HTTP del
+   cliente (la libreria `requests` no "se ve" como Chrome aunque tenga
+   las cookies correctas), no solo la cookie de sesion.
+3. SOLUCION ACTUAL: hacer TODA la interaccion (poner la fecha, elegir
+   moneda, hacer clic en "Exportar") dentro del propio navegador real
+   controlado por Selenium, configurando Chrome para que descargue el
+   archivo a una carpeta fija sin preguntar. Como nunca se sale del
+   navegador real, no hay mismatch de fingerprint posible.
+
+Elementos relevantes de la pagina (confirmados contra el HTML real que
+compartio el usuario):
+    ctl00_cphContent_rdpDate_dateInput  -> input visible de fecha (DD/MM/YYYY)
+    ctl00_cphContent_lbtnMn             -> pestaña "Moneda Nacional"
+    ctl00_cphContent_lbtnMex            -> pestaña "Moneda Extranjera"
+    ctl00_cphContent_btnExportar        -> boton "Exportar"
+Los botones/pestañas estan dentro de un UpdatePanel ("updConsulta"), asi
+que cambiar de pestaña hace un postback asincrono (AJAX) que puede
+reemplazar esos nodos del DOM; por eso cada elemento se vuelve a buscar
+por su id justo antes de usarlo, en vez de guardar la referencia de mas
+arriba (evita errores de "elemento obsoleto").
 
 Requisitos: Chrome instalado (Selenium >= 4.6 descarga el chromedriver
-compatible automaticamente, no hace falta instalarlo a mano).
+compatible automaticamente, no hace falta instalarlo a mano) y
+`pip install selenium`.
 
 Uso:
     python descarga_sbs_tasas_activas.py --fecha 07/10/2026
@@ -51,125 +54,96 @@ import sys
 import time
 from pathlib import Path
 
-import requests
-from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter, Retry
-
 URL = "https://www.sbs.gob.pe/app/pp/EstadisticasSAEEPortal/Paginas/TIActivaTipoCreditoEmpresa.aspx?tip=B"
 
 PROCESSED_DIR = Path("data/processed")
 
+ID_FECHA = "ctl00_cphContent_rdpDate_dateInput"
+ID_TAB_MN = "ctl00_cphContent_lbtnMn"
+ID_TAB_ME = "ctl00_cphContent_lbtnMex"
+ID_BOTON_EXPORTAR = "ctl00_cphContent_btnExportar"
 
-def _resolver_reto_incapsula(url: str, espera_seg: float = 8.0) -> tuple[list[dict], str]:
-    """
-    Abre Chrome real con Selenium, carga la pagina, y espera a que el
-    reto JS de Incapsula se resuelva (deja un par de segundos de margen
-    despues de que el elemento esperado aparezca). Devuelve las cookies
-    de la sesion y el User-Agent real del navegador, para reutilizarlos
-    en una sesion de `requests` normal.
-    """
+
+def _crear_driver(carpeta_descargas: Path):
     from selenium import webdriver
+
+    carpeta_descargas.mkdir(parents=True, exist_ok=True)
+    opciones = webdriver.ChromeOptions()
+    opciones.add_argument("--window-size=1280,900")
+    # Sin --headless a proposito: Incapsula distingue Chrome headless del
+    # normal con mas facilidad.
+    opciones.add_experimental_option(
+        "prefs",
+        {
+            "download.default_directory": str(carpeta_descargas.resolve()),
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True,
+        },
+    )
+    return webdriver.Chrome(options=opciones)
+
+
+def _esperar_elemento(driver, id_elemento: str, timeout: int = 30):
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
 
-    opciones = webdriver.ChromeOptions()
-    opciones.add_argument("--window-size=1280,900")
-    # Sin --headless a proposito: algunos sistemas anti-bots distinguen
-    # Chrome headless del normal y lo bloquean con mas facilidad.
-
-    driver = webdriver.Chrome(options=opciones)
-    try:
-        driver.get(url)
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.ID, "ctl00_cphContent_btnExportar"))
-        )
-        time.sleep(espera_seg)  # margen extra para que termine de asentar la cookie de Incapsula
-        cookies = driver.get_cookies()
-        user_agent = driver.execute_script("return navigator.userAgent")
-        return cookies, user_agent
-    finally:
-        driver.quit()
+    return WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.ID, id_elemento)))
 
 
-def _session_con_cookies(cookies: list[dict], user_agent: str) -> requests.Session:
-    s = requests.Session()
-    s.headers.update({"User-Agent": user_agent, "Referer": URL})
-    for c in cookies:
-        s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
-    retries = Retry(total=4, backoff_factor=2, status_forcelist=[500, 502, 503, 504])
-    s.mount("https://", HTTPAdapter(max_retries=retries))
-    return s
+def _poner_fecha(driver, fecha: str):
+    from selenium.webdriver.common.keys import Keys
+
+    campo = _esperar_elemento(driver, ID_FECHA)
+    campo.click()
+    campo.send_keys(Keys.CONTROL, "a")
+    campo.send_keys(Keys.DELETE)
+    campo.send_keys(fecha)
+    campo.send_keys(Keys.TAB)  # dispara el blur para que el control sincronice la fecha
+    time.sleep(1)
 
 
-def _campos_formulario(html: str) -> dict:
-    """
-    Extrae todos los campos <input> del formulario (hidden, text, submit)
-    como un diccionario name -> value. Se usa para partir de un formulario
-    "fresco" (con __VIEWSTATE/__EVENTVALIDATION validos de esa carga de
-    pagina) y solo sobreescribir los campos que nos interesan, en vez de
-    armar el payload a mano y arriesgarnos a que falte algun campo oculto
-    que el servidor espera.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    form = soup.find("form", attrs={"name": "aspnetForm"}) or soup.find("form")
-    if form is None:
-        raise ValueError(
-            "No se encontro el formulario 'aspnetForm' en la pagina (probablemente "
-            "Incapsula volvio a bloquear la peticion; revisa el archivo .html guardado)."
-        )
-
-    campos = {}
-    for inp in form.find_all("input"):
-        nombre = inp.get("name")
-        if not nombre:
-            continue
-        tipo = (inp.get("type") or "text").lower()
-        if tipo == "submit":
-            continue  # solo se envia el boton que se "presiona", se agrega aparte
-        campos[nombre] = inp.get("value", "")
-    return campos
+def _elegir_moneda(driver, moneda: str):
+    if moneda == "MN":
+        tab = _esperar_elemento(driver, ID_TAB_MN)
+    else:
+        tab = _esperar_elemento(driver, ID_TAB_ME)
+    tab.click()
+    time.sleep(2)  # la pestaña hace un postback asincrono (AJAX) dentro del UpdatePanel
 
 
-def exportar_tasas(session: requests.Session, fecha: str, moneda: str) -> requests.Response:
-    """
-    fecha: 'DD/MM/YYYY'
-    moneda: 'MN' o 'ME'
-    Devuelve la respuesta cruda del servidor (el archivo exportado).
-    """
-    dia, mes, anio = fecha.split("/")
-    fecha_iso = f"{anio}-{mes}-{dia}"
-
-    resp_get = session.get(URL, timeout=30)
-    resp_get.raise_for_status()
-    campos = _campos_formulario(resp_get.text)
-
-    campos["ctl00$cphContent$rdpDate"] = fecha_iso
-    campos["ctl00$cphContent$rdpDate$dateInput"] = fecha
-    campos["ctl00$cphContent$hdTipoMoneda"] = moneda
-    campos["ctl00$cphContent$hdTipoEntidad"] = "B"
-    campos["ctl00$cphContent$btnExportar"] = "Exportar"
-
-    resp_post = session.post(URL, data=campos, timeout=60)
-    resp_post.raise_for_status()
-    return resp_post
+def _esperar_descarga(carpeta: Path, archivos_antes: set, timeout: int = 30) -> Path:
+    fin = time.time() + timeout
+    while time.time() < fin:
+        actuales = set(carpeta.iterdir())
+        nuevos = [
+            p for p in (actuales - archivos_antes)
+            if p.is_file() and not p.name.endswith(".crdownload") and not p.name.endswith(".tmp")
+        ]
+        if nuevos:
+            # Esperar un instante mas por si el archivo sigue escribiendose
+            time.sleep(1)
+            return nuevos[0]
+        time.sleep(0.5)
+    raise TimeoutError(f"No aparecio ningun archivo nuevo en {carpeta} despues de {timeout}s")
 
 
-def _nombre_archivo(resp: requests.Response, fecha: str, moneda: str) -> str:
-    """Intenta tomar el nombre de archivo del header Content-Disposition;
-    si no viene, arma uno propio a partir de la fecha y moneda pedidas."""
-    disposicion = resp.headers.get("Content-Disposition", "")
-    m = re.search(r'filename="?([^";]+)"?', disposicion)
-    if m:
-        return m.group(1).strip()
+def descargar_tasas(driver, carpeta_descargas: Path, fecha: str, moneda: str) -> Path:
+    from selenium.webdriver.common.by import By
 
-    extension = ".xls"
-    tipo_contenido = resp.headers.get("Content-Type", "")
-    if "openxmlformats" in tipo_contenido:
-        extension = ".xlsx"
+    driver.get(URL)
+    _esperar_elemento(driver, ID_BOTON_EXPORTAR)
 
-    dia, mes, anio = fecha.split("/")
-    return f"tasas_activas_bancos_{moneda}_{anio}-{mes}-{dia}{extension}"
+    _elegir_moneda(driver, moneda)
+    _poner_fecha(driver, fecha)
+
+    archivos_antes = set(carpeta_descargas.iterdir()) if carpeta_descargas.exists() else set()
+
+    boton = driver.find_element(By.ID, ID_BOTON_EXPORTAR)
+    boton.click()
+
+    return _esperar_descarga(carpeta_descargas, archivos_antes)
 
 
 def main():
@@ -181,7 +155,7 @@ def main():
         default="MN",
         help="MN = Moneda Nacional, ME = Moneda Extranjera, ambas = descarga las dos (default MN)",
     )
-    ap.add_argument("--outdir", default=str(PROCESSED_DIR), help="Carpeta de salida")
+    ap.add_argument("--outdir", default=str(PROCESSED_DIR), help="Carpeta de salida final")
     args = ap.parse_args()
 
     if not re.match(r"^\d{2}/\d{2}/\d{4}$", args.fecha):
@@ -190,46 +164,36 @@ def main():
 
     salida = Path(args.outdir)
     salida.mkdir(parents=True, exist_ok=True)
+    carpeta_descargas = salida / "_descargas_temp"
 
     monedas = ["MN", "ME"] if args.moneda == "ambas" else [args.moneda]
 
-    print("Abriendo Chrome para pasar la verificacion anti-bots de la SBS (Incapsula)...")
+    print("Abriendo Chrome (no lo cierres hasta que termine)...")
     try:
-        cookies, user_agent = _resolver_reto_incapsula(URL)
+        driver = _crear_driver(carpeta_descargas)
     except Exception as exc:
-        print(f"[ERROR] No se pudo abrir/usar Chrome con Selenium: {exc}", file=sys.stderr)
+        print(f"[ERROR] No se pudo abrir Chrome con Selenium: {exc}", file=sys.stderr)
         print("Verifica que Chrome este instalado y que 'pip install selenium' se haya hecho bien.", file=sys.stderr)
         sys.exit(1)
-    print(f"  Cookies obtenidas: {len(cookies)}. Continuando sin el navegador...")
 
-    session = _session_con_cookies(cookies, user_agent)
-    for moneda in monedas:
-        print(f"Exportando tasas activas ({moneda}) al {args.fecha}...")
-        try:
-            resp = exportar_tasas(session, args.fecha, moneda)
-        except requests.RequestException as exc:
-            print(f"  [ERROR] Fallo la peticion: {exc}", file=sys.stderr)
-            continue
-        except ValueError as exc:
-            print(f"  [ERROR] {exc}", file=sys.stderr)
-            continue
+    try:
+        for moneda in monedas:
+            print(f"Exportando tasas activas ({moneda}) al {args.fecha}...")
+            try:
+                archivo_descargado = descargar_tasas(driver, carpeta_descargas, args.fecha, moneda)
+            except Exception as exc:
+                print(f"  [ERROR] {exc}", file=sys.stderr)
+                continue
 
-        tipo_contenido = resp.headers.get("Content-Type", "")
-        if "text/html" in tipo_contenido and len(resp.content) < 20000:
-            # Probablemente no exporto el archivo, sino que devolvio la
-            # pagina de nuevo (ej. fecha invalida, sin datos para ese dia,
-            # o la cookie de Incapsula ya expiro). Se guarda igual para
-            # poder diagnosticar que paso.
-            print(
-                f"  [WARN] La respuesta parece ser HTML, no un archivo Excel "
-                f"(Content-Type: {tipo_contenido}). Revisa el archivo guardado.",
-                file=sys.stderr,
-            )
-
-        nombre = _nombre_archivo(resp, args.fecha, moneda)
-        destino = salida / nombre
-        destino.write_bytes(resp.content)
-        print(f"  OK: {destino} ({len(resp.content)} bytes)")
+            dia, mes, anio = args.fecha.split("/")
+            extension = archivo_descargado.suffix or ".xls"
+            destino = salida / f"tasas_activas_bancos_{moneda}_{anio}-{mes}-{dia}{extension}"
+            archivo_descargado.replace(destino)
+            print(f"  OK: {destino}")
+    finally:
+        driver.quit()
+        if carpeta_descargas.exists() and not any(carpeta_descargas.iterdir()):
+            carpeta_descargas.rmdir()
 
 
 if __name__ == "__main__":
