@@ -7,29 +7,35 @@ https://www.sbs.gob.pe/app/pp/EstadisticasSAEEPortal/Paginas/TIActivaTipoCredito
 
 A diferencia de los reportes B-2201/B-2401 (archivos .XLS fijos en la
 intranet), esta es una pagina web dinamica tipo ASP.NET (Telerik
-RadControls). Verificado contra el codigo fuente real de la pagina (HTML
-guardado por el usuario, fecha 07/10/2026):
+RadControls), y ademas esta protegida por Incapsula (firewall/anti-bots):
+una peticion simple con `requests` (sin pasar antes por un navegador real)
+recibe una pagina de bloqueo de ~800 bytes en vez del contenido real,
+aunque el status HTTP sea 200. Verificado con una prueba real del
+usuario.
 
-- El boton "Exportar" (id ctl00_cphContent_btnExportar) dispara un
-  POSTBACK COMPLETO (no AJAX parcial) que hace que el servidor responda
-  directamente con el archivo Excel. Por eso se puede replicar con una
-  simple peticion POST (requests), sin necesitar Selenium/navegador.
-- El formulario trae los campos ocultos tipicos de ASP.NET (__VIEWSTATE,
-  __VIEWSTATEGENERATOR, __EVENTVALIDATION, etc.) que cambian en cada
-  sesion/carga de pagina, asi que SIEMPRE hay que hacer primero un GET
-  para obtener un formulario fresco antes de cada POST.
-- Campos relevantes para elegir fecha y moneda:
-    ctl00$cphContent$rdpDate              -> fecha ISO (YYYY-MM-DD)
-    ctl00$cphContent$rdpDate$dateInput    -> fecha visible (DD/MM/YYYY)
-    ctl00$cphContent$hdTipoMoneda         -> "MN" o "ME"
-    ctl00$cphContent$hdTipoEntidad        -> "B" (Bancos; coincide con
-                                              el parametro ?tip=B de la URL)
-    ctl00$cphContent$btnExportar          -> "Exportar" (nombre/valor del
-                                              boton que se "presiona")
-- IMPORTANTE: a diferencia de los otros scripts (B-2201/B-2401), este
-  sitio es PUBLICO (www.sbs.gob.pe), no la intranet. Debería ser
-  accesible desde cualquier conexion normal a internet, sin necesitar la
-  VPN/red institucional.
+Por eso el script funciona en DOS ETAPAS:
+1. Abre un navegador real (Selenium + Chrome) para cargar la pagina. El
+   navegador ejecuta el JavaScript del reto de Incapsula de forma normal
+   y el sitio le entrega cookies validas de "no soy un bot". Se toman
+   esas cookies (y el mismo User-Agent del navegador, Incapsula tambien
+   valida que coincida) y se cierra el navegador: ya no hace falta para
+   el resto.
+2. Con esas cookies, se arma una sesion de `requests` normal y se replica
+   el boton "Exportar" (id ctl00_cphContent_btnExportar), que en el HTML
+   real dispara un POSTBACK COMPLETO de ASP.NET (no AJAX parcial): el
+   servidor responde directamente con el archivo Excel. Se hace un GET
+   fresco antes de cada POST para tomar un __VIEWSTATE/__EVENTVALIDATION
+   validos (cambian en cada carga de pagina), y se sobreescriben solo los
+   campos que nos interesan:
+     ctl00$cphContent$rdpDate              -> fecha ISO (YYYY-MM-DD)
+     ctl00$cphContent$rdpDate$dateInput    -> fecha visible (DD/MM/YYYY)
+     ctl00$cphContent$hdTipoMoneda         -> "MN" o "ME"
+     ctl00$cphContent$hdTipoEntidad        -> "B" (Bancos; coincide con
+                                               el parametro ?tip=B de la URL)
+     ctl00$cphContent$btnExportar          -> "Exportar"
+
+Requisitos: Chrome instalado (Selenium >= 4.6 descarga el chromedriver
+compatible automaticamente, no hace falta instalarlo a mano).
 
 Uso:
     python descarga_sbs_tasas_activas.py --fecha 07/10/2026
@@ -42,6 +48,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -50,20 +57,46 @@ from requests.adapters import HTTPAdapter, Retry
 
 URL = "https://www.sbs.gob.pe/app/pp/EstadisticasSAEEPortal/Paginas/TIActivaTipoCreditoEmpresa.aspx?tip=B"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
-    "Referer": URL,
-}
-
 PROCESSED_DIR = Path("data/processed")
 
 
-def _session() -> requests.Session:
+def _resolver_reto_incapsula(url: str, espera_seg: float = 8.0) -> tuple[list[dict], str]:
+    """
+    Abre Chrome real con Selenium, carga la pagina, y espera a que el
+    reto JS de Incapsula se resuelva (deja un par de segundos de margen
+    despues de que el elemento esperado aparezca). Devuelve las cookies
+    de la sesion y el User-Agent real del navegador, para reutilizarlos
+    en una sesion de `requests` normal.
+    """
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    opciones = webdriver.ChromeOptions()
+    opciones.add_argument("--window-size=1280,900")
+    # Sin --headless a proposito: algunos sistemas anti-bots distinguen
+    # Chrome headless del normal y lo bloquean con mas facilidad.
+
+    driver = webdriver.Chrome(options=opciones)
+    try:
+        driver.get(url)
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.ID, "ctl00_cphContent_btnExportar"))
+        )
+        time.sleep(espera_seg)  # margen extra para que termine de asentar la cookie de Incapsula
+        cookies = driver.get_cookies()
+        user_agent = driver.execute_script("return navigator.userAgent")
+        return cookies, user_agent
+    finally:
+        driver.quit()
+
+
+def _session_con_cookies(cookies: list[dict], user_agent: str) -> requests.Session:
     s = requests.Session()
-    s.headers.update(HEADERS)
+    s.headers.update({"User-Agent": user_agent, "Referer": URL})
+    for c in cookies:
+        s.cookies.set(c["name"], c["value"], domain=c.get("domain"))
     retries = Retry(total=4, backoff_factor=2, status_forcelist=[500, 502, 503, 504])
     s.mount("https://", HTTPAdapter(max_retries=retries))
     return s
@@ -81,7 +114,10 @@ def _campos_formulario(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     form = soup.find("form", attrs={"name": "aspnetForm"}) or soup.find("form")
     if form is None:
-        raise ValueError("No se encontro el formulario 'aspnetForm' en la pagina")
+        raise ValueError(
+            "No se encontro el formulario 'aspnetForm' en la pagina (probablemente "
+            "Incapsula volvio a bloquear la peticion; revisa el archivo .html guardado)."
+        )
 
     campos = {}
     for inp in form.find_all("input"):
@@ -157,7 +193,16 @@ def main():
 
     monedas = ["MN", "ME"] if args.moneda == "ambas" else [args.moneda]
 
-    session = _session()
+    print("Abriendo Chrome para pasar la verificacion anti-bots de la SBS (Incapsula)...")
+    try:
+        cookies, user_agent = _resolver_reto_incapsula(URL)
+    except Exception as exc:
+        print(f"[ERROR] No se pudo abrir/usar Chrome con Selenium: {exc}", file=sys.stderr)
+        print("Verifica que Chrome este instalado y que 'pip install selenium' se haya hecho bien.", file=sys.stderr)
+        sys.exit(1)
+    print(f"  Cookies obtenidas: {len(cookies)}. Continuando sin el navegador...")
+
+    session = _session_con_cookies(cookies, user_agent)
     for moneda in monedas:
         print(f"Exportando tasas activas ({moneda}) al {args.fecha}...")
         try:
@@ -165,12 +210,15 @@ def main():
         except requests.RequestException as exc:
             print(f"  [ERROR] Fallo la peticion: {exc}", file=sys.stderr)
             continue
+        except ValueError as exc:
+            print(f"  [ERROR] {exc}", file=sys.stderr)
+            continue
 
         tipo_contenido = resp.headers.get("Content-Type", "")
         if "text/html" in tipo_contenido and len(resp.content) < 20000:
             # Probablemente no exporto el archivo, sino que devolvio la
             # pagina de nuevo (ej. fecha invalida, sin datos para ese dia,
-            # o cambio algun campo del formulario). Se guarda igual para
+            # o la cookie de Incapsula ya expiro). Se guarda igual para
             # poder diagnosticar que paso.
             print(
                 f"  [WARN] La respuesta parece ser HTML, no un archivo Excel "
